@@ -282,30 +282,40 @@ export function RechargeFormCard({
               )}
 
               <div className='space-y-2.5 sm:space-y-3'>
-                <Label
-                  htmlFor='topup-amount'
-                  className='text-muted-foreground text-xs font-medium tracking-wider uppercase'
-                >
-                  {t('Custom Amount')}
-                </Label>
-                <div className='grid grid-cols-[minmax(0,1fr)_minmax(110px,0.55fr)] gap-2 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center'>
-                  <Input
-                    id='topup-amount'
-                    type='number'
-                    value={localAmount}
-                    onChange={(e) => handleAmountChange(e.target.value)}
-                    min={minTopup}
-                    placeholder={`Minimum ${minTopup}`}
-                    className='h-9 text-base sm:h-10 sm:text-lg'
-                  />
-                  <div className='bg-muted/30 flex min-h-9 items-center justify-between gap-2 rounded-md border px-3 lg:min-w-52'>
-                    <span className='text-muted-foreground truncate text-xs'>
+                <div className='flex items-center justify-between'>
+                  <Label
+                    htmlFor='topup-amount'
+                    className='text-foreground text-sm font-semibold tracking-wide'
+                  >
+                    {t('Custom Amount')}
+                  </Label>
+                  <span className='text-xs text-muted-foreground'>
+                    最低充值 {formatCurrency(minTopup)} 起
+                  </span>
+                </div>
+                <div className='grid grid-cols-1 sm:grid-cols-[minmax(0,1.2fr)_minmax(180px,0.8fr)] gap-3 items-center'>
+                  <div className='relative flex items-center'>
+                    <span className='absolute left-4 text-xl font-bold text-muted-foreground select-none pointer-events-none'>
+                      ¥
+                    </span>
+                    <Input
+                      id='topup-amount'
+                      type='number'
+                      value={localAmount}
+                      onChange={(e) => handleAmountChange(e.target.value)}
+                      min={minTopup}
+                      placeholder={`最低 ${minTopup}`}
+                      className='h-12 pl-9 pr-4 text-xl font-bold font-mono rounded-xl bg-background/50 border-input shadow-xs transition-all focus-visible:ring-2 focus-visible:ring-primary/40'
+                    />
+                  </div>
+                  <div className='bg-primary/5 dark:bg-primary/10 border border-primary/20 flex h-12 items-center justify-between gap-3 rounded-xl px-4 shadow-xs'>
+                    <span className='text-muted-foreground truncate text-xs font-medium'>
                       {t('Amount to pay:')}
                     </span>
                     {calculating ? (
-                      <Skeleton className='h-5 w-16' />
+                      <Skeleton className='h-6 w-20' />
                     ) : (
-                      <span className='text-sm font-semibold'>
+                      <span className='text-lg font-bold text-primary tracking-tight'>
                         {formatCurrency(paymentAmount)}
                       </span>
                     )}
@@ -313,12 +323,22 @@ export function RechargeFormCard({
                 </div>
               </div>
 
-              <div className='space-y-2.5 sm:space-y-3'>
-                <Label className='text-muted-foreground text-xs font-medium tracking-wider uppercase'>
-                  {t('Payment Method')}
-                </Label>
+              <div className='space-y-2.5 sm:space-y-3 pt-2'>
+                <div className='flex items-center justify-between'>
+                  <Label className='text-foreground text-sm font-semibold tracking-wide flex items-center gap-2'>
+                    <span>{t('Payment Method')}</span>
+                    <span className='text-xs font-normal text-muted-foreground'>
+                      （官方直连 · 扫码极速到账）
+                    </span>
+                  </Label>
+                </div>
                 {hasStandardPaymentMethods ? (
-                  <div className='grid grid-cols-2 gap-1.5 sm:gap-3 lg:grid-cols-3'>
+                  <div className={cn(
+                    'grid gap-3.5',
+                    topupInfo?.pay_methods?.length === 1
+                      ? 'grid-cols-1 max-w-md'
+                      : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3'
+                  )}>
                     {topupInfo?.pay_methods?.map((method) => {
                       const minTopup = Math.max(
                         method.min_topup || 0,
@@ -334,10 +354,18 @@ export function RechargeFormCard({
                         ? `${t('Minimum:')} ${minTopup}`
                         : undefined
 
+                      const isWechat =
+                        method.type === 'wxpay' ||
+                        method.type.includes('wechat') ||
+                        method.name.includes('微信')
+                      const isAlipay =
+                        method.type === 'alipay' ||
+                        method.name.includes('支付宝')
+
                       const button = (
-                        <Button
+                        <button
                           key={method.type}
-                          variant='outline'
+                          type='button'
                           onClick={() => onPaymentMethodSelect(method)}
                           disabled={disabled || !!paymentLoading}
                           title={disabledReason}
@@ -346,29 +374,73 @@ export function RechargeFormCard({
                               ? `${method.name}. ${disabledReason}`
                               : method.name
                           }
-                          className='min-h-14 min-w-0 justify-start gap-2 rounded-lg px-3 py-2 text-left'
-                        >
-                          {paymentLoading === method.type ? (
-                            <Loader2 className='h-4 w-4 animate-spin' />
-                          ) : (
-                            getPaymentIcon(
-                              method.type,
-                              'h-4 w-4',
-                              method.icon,
-                              method.name
-                            )
+                          className={cn(
+                            'group relative flex min-h-[72px] w-full items-center justify-between rounded-xl border-2 p-3.5 text-left transition-all duration-200 outline-none cursor-pointer',
+                            isWechat
+                              ? 'border-emerald-500/50 bg-emerald-500/5 hover:border-emerald-500 hover:bg-emerald-500/10 dark:border-emerald-500/40 dark:bg-emerald-950/20 dark:hover:bg-emerald-950/35 shadow-sm'
+                              : isAlipay
+                              ? 'border-blue-500/50 bg-blue-500/5 hover:border-blue-500 hover:bg-blue-500/10 dark:border-blue-500/40 dark:bg-blue-950/20 shadow-sm'
+                              : 'border-border/80 bg-card hover:border-primary/50 hover:bg-accent/50',
+                            disabled &&
+                              'opacity-50 cursor-not-allowed hover:border-border hover:bg-transparent',
+                            paymentLoading === method.type && 'pointer-events-none'
                           )}
-                          <span className='flex min-w-0 flex-col items-start gap-0.5'>
-                            <span className='max-w-full truncate'>
-                              {method.name}
-                            </span>
-                            {disabledLabel && (
-                              <span className='text-muted-foreground max-w-full truncate text-[11px] leading-4 font-normal'>
+                        >
+                          <div className='flex items-center gap-3.5 min-w-0'>
+                            <div
+                              className={cn(
+                                'flex size-11 shrink-0 items-center justify-center rounded-xl transition-transform group-hover:scale-105',
+                                isWechat
+                                  ? 'bg-emerald-500/15 text-[#07C160] ring-1 ring-emerald-500/30'
+                                  : isAlipay
+                                  ? 'bg-blue-500/15 text-[#1677FF] ring-1 ring-blue-500/30'
+                                  : 'bg-muted text-foreground'
+                              )}
+                            >
+                              {paymentLoading === method.type ? (
+                                <Loader2 className='size-5 animate-spin' />
+                              ) : (
+                                getPaymentIcon(
+                                  method.type,
+                                  'size-6',
+                                  method.icon,
+                                  method.name
+                                )
+                              )}
+                            </div>
+                            <div className='flex flex-col min-w-0'>
+                              <span className='text-base font-bold text-foreground tracking-tight'>
+                                {method.name}
+                              </span>
+                              <span className='text-xs text-muted-foreground truncate'>
+                                {isWechat
+                                  ? '微信支付官方直连 · 扫码即付'
+                                  : isAlipay
+                                  ? '支付宝官方直连 · 扫码即付'
+                                  : '安全快捷支付'}
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className='flex items-center gap-2 shrink-0 pl-2'>
+                            {disabledLabel ? (
+                              <span className='text-muted-foreground text-[11px] font-normal'>
                                 {disabledLabel}
                               </span>
+                            ) : (
+                              <span
+                                className={cn(
+                                  'text-[11px] font-semibold px-2.5 py-0.5 rounded-full border',
+                                  isWechat
+                                    ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30'
+                                    : 'bg-primary/10 text-primary border-primary/20'
+                                )}
+                              >
+                                官方推荐
+                              </span>
                             )}
-                          </span>
-                        </Button>
+                          </div>
+                        </button>
                       )
 
                       return disabled ? (

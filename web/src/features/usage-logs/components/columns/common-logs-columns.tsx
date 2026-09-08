@@ -654,6 +654,21 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
         const promptTokens = log.prompt_tokens || 0
         const completionTokens = log.completion_tokens || 0
         if (promptTokens === 0 && completionTokens === 0) {
+          const isPerCall =
+            isPerCallBilling(other?.model_price) ||
+            Boolean(other?.is_task) ||
+            (typeof log.content === 'string' && log.content.includes('按次计费'))
+          if (isPerCall) {
+            return (
+              <StatusBadge
+                label={t('Per-call')}
+                variant='neutral'
+                size='sm'
+                copyable={false}
+                className='!text-[11px]'
+              />
+            )
+          }
           return <span className='text-muted-foreground text-xs'>-</span>
         }
 

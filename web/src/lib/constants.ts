@@ -21,7 +21,7 @@ For commercial licensing, please contact support@quantumnous.com
  */
 
 // System Configuration Defaults
-export const DEFAULT_SYSTEM_NAME = 'New API'
+export const DEFAULT_SYSTEM_NAME = '鑫元宝云计算模型服务平台'
 export const DEFAULT_LOGO = '/logo.png'
 
 // LocalStorage Keys

@@ -31,13 +31,25 @@ func GetEndpointTypesByChannelType(channelType int, modelName string) []constant
 	case constant.ChannelTypeSora:
 		endpointTypes = []constant.EndpointType{constant.EndpointTypeOpenAIVideo}
 	case constant.ChannelTypeSub2API, constant.ChannelTypeNewAPI:
-		endpointTypes = []constant.EndpointType{
-			constant.EndpointTypeOpenAI,
-			constant.EndpointTypeOpenAIResponse,
-			constant.EndpointTypeOpenAIResponseCompact,
-			constant.EndpointTypeAnthropic,
-			constant.EndpointTypeGemini,
-			constant.EndpointTypeOpenAIAlphaSearch,
+		if IsVideoGenerationModel(modelName) {
+			endpointTypes = []constant.EndpointType{
+				constant.EndpointTypeOpenAIVideo,
+				constant.EndpointTypeOpenAI,
+			}
+		} else if IsImageGenerationModel(modelName) {
+			endpointTypes = []constant.EndpointType{
+				constant.EndpointTypeImageGeneration,
+				constant.EndpointTypeOpenAI,
+			}
+		} else {
+			endpointTypes = []constant.EndpointType{
+				constant.EndpointTypeOpenAI,
+				constant.EndpointTypeOpenAIResponse,
+				constant.EndpointTypeOpenAIResponseCompact,
+				constant.EndpointTypeAnthropic,
+				constant.EndpointTypeGemini,
+				constant.EndpointTypeOpenAIAlphaSearch,
+			}
 		}
 	case constant.ChannelTypeCodex:
 		endpointTypes = []constant.EndpointType{
@@ -53,8 +65,28 @@ func GetEndpointTypesByChannelType(channelType int, modelName string) []constant
 		}
 	}
 	if IsImageGenerationModel(modelName) {
-		// add to first
-		endpointTypes = append([]constant.EndpointType{constant.EndpointTypeImageGeneration}, endpointTypes...)
+		hasImage := false
+		for _, et := range endpointTypes {
+			if et == constant.EndpointTypeImageGeneration {
+				hasImage = true
+				break
+			}
+		}
+		if !hasImage {
+			endpointTypes = append([]constant.EndpointType{constant.EndpointTypeImageGeneration}, endpointTypes...)
+		}
+	}
+	if IsVideoGenerationModel(modelName) {
+		hasVideo := false
+		for _, et := range endpointTypes {
+			if et == constant.EndpointTypeOpenAIVideo {
+				hasVideo = true
+				break
+			}
+		}
+		if !hasVideo {
+			endpointTypes = append([]constant.EndpointType{constant.EndpointTypeOpenAIVideo}, endpointTypes...)
+		}
 	}
 	return endpointTypes
 }

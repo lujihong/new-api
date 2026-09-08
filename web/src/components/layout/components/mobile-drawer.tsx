@@ -49,7 +49,6 @@ function BrandLogo({
   displayLogo,
   displaySiteName,
   loading,
-  logoLoaded,
   onClick,
 }: BrandLogoProps) {
   return (
@@ -58,11 +57,12 @@ function BrandLogo({
       className='flex items-center gap-2 text-xl font-bold'
       onClick={onClick}
     >
-      <div className='relative h-6 w-6'>
-        {loading || !logoLoaded ? (
-          <Skeleton className='absolute inset-0 rounded-full' />
-        ) : null}
-        {displayLogo}
+      <div className='relative flex size-6 items-center justify-center'>
+        {loading ? (
+          <Skeleton className='absolute inset-0 rounded-md' />
+        ) : (
+          displayLogo
+        )}
       </div>
       {loading ? <Skeleton className='h-5 w-20' /> : displaySiteName}
     </Link>

@@ -16,7 +16,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { formatCurrencyFromUSD } from '@/lib/currency'
+import {
+  formatCurrencyFromUSD,
+  formatLocalCurrencyAmount,
+  getCurrencyDisplay,
+} from '@/lib/currency'
 
 import { QUOTA_TYPE_VALUES, TOKEN_UNIT_DIVISORS } from '../constants'
 import type { PricingModel, TokenUnit, PriceType } from '../types'
@@ -223,8 +227,18 @@ export function formatFixedPrice(
   }
 
   const ratio = getConfiguredGroupRatio(groupRatio, group)
-  let priceInUSD = (model.model_price || 0) * ratio
+  const basePrice = (model.model_price || 0) * ratio
 
+  const { config } = getCurrencyDisplay()
+  if (config.quotaDisplayType === 'CNY') {
+    return formatLocalCurrencyAmount(basePrice, {
+      digitsLarge: 2,
+      digitsSmall: 4,
+      abbreviate: false,
+    })
+  }
+
+  let priceInUSD = basePrice
   priceInUSD = applyRechargeRate(
     priceInUSD,
     showWithRecharge,
@@ -254,9 +268,18 @@ export function formatRequestPrice(
   }
 
   const displayGroupRatio = getDisplayGroupRatio(model, selectedGroup)
+  const basePrice = (model.model_price || 0) * displayGroupRatio
 
-  let priceInUSD = (model.model_price || 0) * displayGroupRatio
+  const { config } = getCurrencyDisplay()
+  if (config.quotaDisplayType === 'CNY') {
+    return formatLocalCurrencyAmount(basePrice, {
+      digitsLarge: 2,
+      digitsSmall: 4,
+      abbreviate: false,
+    })
+  }
 
+  let priceInUSD = basePrice
   priceInUSD = applyRechargeRate(
     priceInUSD,
     showWithRecharge,

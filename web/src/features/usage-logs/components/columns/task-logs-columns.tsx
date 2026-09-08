@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import type { ColumnDef } from '@tanstack/react-table'
-import { Music } from 'lucide-react'
+import { Music, Video, AlertCircle } from 'lucide-react'
 /* eslint-disable react-refresh/only-export-components */
 import { useState, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -27,6 +27,7 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { getUserAvatarFallback, getUserAvatarStyle } from '@/lib/avatar'
 import { formatTimestampToDate } from '@/lib/format'
 import { cn } from '@/lib/utils'
+import { useAuthStore } from '@/stores/auth-store'
 
 import { TASK_ACTIONS, TASK_STATUS } from '../../constants'
 import { taskActionMapper, taskStatusMapper } from '../../lib/mappers'
@@ -35,6 +36,7 @@ import {
   AudioPreviewDialog,
   type AudioClip,
 } from '../dialogs/audio-preview-dialog'
+import { VideoPreviewDialog } from '../dialogs/video-preview-dialog'
 import { FailReasonDialog } from '../dialogs/fail-reason-dialog'
 import { useUsageLogsContext } from '../usage-logs-provider'
 import {
@@ -85,6 +87,38 @@ function AudioPreviewCell({ log }: { log: TaskLog }) {
         open={open}
         onOpenChange={setOpen}
         clips={clips as AudioClip[]}
+      />
+    </>
+  )
+}
+
+function VideoPreviewCell({ log }: { log: TaskLog }) {
+  const { t } = useTranslation()
+  const [open, setOpen] = useState(false)
+  const accessToken = useAuthStore((state) => state.auth.accessToken)
+
+  const videoUrl = useMemo(() => {
+    const base = `/v1/videos/${log.task_id}/content`
+    return accessToken ? `${base}?token=${encodeURIComponent(accessToken)}` : base
+  }, [log.task_id, accessToken])
+
+  return (
+    <>
+      <button
+        type='button'
+        className='group flex items-center gap-1.5 text-left text-xs'
+        onClick={() => setOpen(true)}
+      >
+        <Video className='text-muted-foreground size-3.5' />
+        <span className='text-foreground leading-snug group-hover:underline'>
+          {t('Click to preview video')}
+        </span>
+      </button>
+      <VideoPreviewDialog
+        open={open}
+        onOpenChange={setOpen}
+        videoUrl={videoUrl}
+        taskId={log.task_id}
       />
     </>
   )
@@ -245,20 +279,10 @@ export function useTaskLogsColumns(isAdmin: boolean): ColumnDef<TaskLog>[] {
           log.action === TASK_ACTIONS.REFERENCE_GENERATE ||
           log.action === TASK_ACTIONS.REMIX_GENERATE
         const isSuccess = status === TASK_STATUS.SUCCESS
-        const isUrl = failReason?.startsWith('http')
+        const hasResultUrl = Boolean(log.result_url || failReason?.startsWith('http'))
 
-        if (isSuccess && isVideoTask && isUrl) {
-          const videoUrl = `/v1/videos/${log.task_id}/content`
-          return (
-            <a
-              href={videoUrl}
-              target='_blank'
-              rel='noopener noreferrer'
-              className='text-foreground text-xs hover:underline'
-            >
-              {t('Click to preview video')}
-            </a>
-          )
+        if (isSuccess && isVideoTask && (hasResultUrl || log.task_id)) {
+          return <VideoPreviewCell log={log} />
         }
 
         if (!failReason) {
@@ -269,12 +293,13 @@ export function useTaskLogsColumns(isAdmin: boolean): ColumnDef<TaskLog>[] {
           <>
             <button
               type='button'
-              className='group flex max-w-[200px] items-center gap-1 text-left text-xs'
+              className='group flex max-w-[200px] items-center gap-1.5 text-left text-xs'
               onClick={() => setDialogOpen(true)}
               title={t('Click to view full error message')}
             >
-              <span className='truncate leading-snug text-red-600 group-hover:underline dark:text-red-400'>
-                {failReason}
+              <AlertCircle className='size-3 text-red-500 shrink-0' />
+              <span className='truncate leading-snug text-red-600 group-hover:underline dark:text-red-400 font-medium'>
+                {t('Generation Failed · View Details')}
               </span>
             </button>
             <FailReasonDialog

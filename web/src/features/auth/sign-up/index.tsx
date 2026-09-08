@@ -22,7 +22,6 @@ import { useTranslation } from 'react-i18next'
 import { useStatus } from '@/hooks/use-status'
 
 import { AuthLayout } from '../auth-layout'
-import { TermsFooter } from '../components/terms-footer'
 import { SignUpForm } from './components/sign-up-form'
 
 export function SignUp() {
@@ -49,12 +48,6 @@ export function SignUp() {
         </div>
 
         <SignUpForm />
-
-        <TermsFooter
-          variant='sign-up'
-          status={status}
-          className='text-center'
-        />
       </div>
     </AuthLayout>
   )

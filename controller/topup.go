@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -305,10 +306,14 @@ func RequestEpay(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "当前管理员未配置支付信息"})
 		return
 	}
+	orderName := fmt.Sprintf("AI算力充值%s元", strconv.FormatFloat(payMoney, 'f', -1, 64))
+	if payMoney <= 0 {
+		orderName = "AI算力充值"
+	}
 	uri, params, err := client.Purchase(&epay.PurchaseArgs{
 		Type:           req.PaymentMethod,
 		ServiceTradeNo: tradeNo,
-		Name:           fmt.Sprintf("TUC%d", req.Amount),
+		Name:           orderName,
 		Money:          strconv.FormatFloat(payMoney, 'f', 2, 64),
 		Device:         epay.PC,
 		NotifyUrl:      notifyUrl,
@@ -449,7 +454,7 @@ func EpayNotify(c *gin.Context) {
 		// 数据库行锁 + 事务内状态校验保证（多实例部署下同样安全）。
 		LockOrder(verifyInfo.ServiceTradeNo)
 		defer UnlockOrder(verifyInfo.ServiceTradeNo)
-		alreadyDone, err := model.RechargeEpay(verifyInfo.ServiceTradeNo, verifyInfo.Type, c.ClientIP())
+		alreadyDone, err := model.RechargeEpay(verifyInfo.ServiceTradeNo, verifyInfo.Type, c.ClientIP(), verifyInfo.Money)
 		if err != nil {
 			switch {
 			case errors.Is(err, model.ErrTopUpNotFound):
@@ -528,6 +533,40 @@ func GetUserTopUps(c *gin.Context) {
 		return
 	}
 
+	pageInfo.SetTotal(int(total))
+	pageInfo.SetItems(topups)
+	common.ApiSuccess(c, pageInfo)
+}
+
+// GetTopUpByTokenKey 通过用户专属 API Token 查询该用户的充值记录流水
+func GetTopUpByTokenKey(c *gin.Context) {
+	key := strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer ")
+	if key == "" {
+		key = c.Query("key")
+	}
+	if key == "" {
+		key = c.Query("token")
+	}
+	if key == "" {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": "缺少Token"})
+		return
+	}
+	if strings.HasPrefix(key, "sk-") {
+		key = strings.TrimPrefix(key, "sk-")
+	}
+	var token model.Token
+	err := model.DB.Where("key = ? AND status = 1", key).First(&token).Error
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": "无效的Token"})
+		return
+	}
+
+	pageInfo := common.GetPageQuery(c)
+	topups, total, err := model.GetUserTopUps(token.UserId, pageInfo)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
 	pageInfo.SetTotal(int(total))
 	pageInfo.SetItems(topups)
 	common.ApiSuccess(c, pageInfo)

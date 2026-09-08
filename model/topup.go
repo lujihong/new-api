@@ -3,6 +3,8 @@ package model
 import (
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
@@ -173,7 +175,7 @@ func UpdatePendingTopUpStatus(tradeNo string, expectedPaymentProvider string, ta
 // 在同一个事务内完成，因此同一订单的并发/重复回调（包括多实例部署下）最多充值一次。
 // alreadyDone=true 表示订单此前已完成，本次为幂等重复回调。
 // 进程内的 LockOrder 只是优化，正确性由本函数的数据库行锁保证。
-func RechargeEpay(tradeNo string, actualPaymentMethod string, callerIp string) (alreadyDone bool, err error) {
+func RechargeEpay(tradeNo string, actualPaymentMethod string, callerIp string, moneyStr ...string) (alreadyDone bool, err error) {
 	if tradeNo == "" {
 		return false, errors.New("未提供支付单号")
 	}
@@ -187,7 +189,46 @@ func RechargeEpay(tradeNo string, actualPaymentMethod string, callerIp string) (
 	topUp := &TopUp{}
 	err = DB.Transaction(func(tx *gorm.DB) error {
 		if err := lockForUpdate(tx).Where(refCol+" = ?", tradeNo).First(topUp).Error; err != nil {
-			return ErrTopUpNotFound
+			// 如果订单记录尚未预建，但订单号属于系统规范的 USR<uid>NO<suffix>，自动执行容错补单
+			if (errors.Is(err, gorm.ErrRecordNotFound) || errors.Is(err, ErrTopUpNotFound)) && strings.HasPrefix(tradeNo, "USR") && strings.Contains(tradeNo, "NO") {
+				noIndex := strings.Index(tradeNo, "NO")
+				uidStr := tradeNo[3:noIndex]
+				uid, parseErr := strconv.Atoi(uidStr)
+				if parseErr == nil && uid > 0 {
+					var user User
+					if uErr := tx.Select("id").Where("id = ?", uid).First(&user).Error; uErr == nil {
+						payMoney := 1.0
+						if len(moneyStr) > 0 && strings.TrimSpace(moneyStr[0]) != "" {
+							if pm, mErr := strconv.ParseFloat(strings.TrimSpace(moneyStr[0]), 64); mErr == nil && pm > 0 {
+								payMoney = pm
+							}
+						}
+						amount := int64(payMoney)
+						if amount < 1 {
+							amount = 1
+						}
+						topUp = &TopUp{
+							UserId:          uid,
+							Amount:          amount,
+							Money:           payMoney,
+							TradeNo:         tradeNo,
+							PaymentMethod:   actualPaymentMethod,
+							PaymentProvider: PaymentProviderEpay,
+							CreateTime:      common.GetTimestamp(),
+							Status:          common.TopUpStatusPending,
+						}
+						if cErr := tx.Create(topUp).Error; cErr != nil {
+							return cErr
+						}
+					} else {
+						return ErrTopUpNotFound
+					}
+				} else {
+					return ErrTopUpNotFound
+				}
+			} else {
+				return ErrTopUpNotFound
+			}
 		}
 		if topUp.PaymentProvider != PaymentProviderEpay {
 			return ErrPaymentMethodMismatch
@@ -203,9 +244,15 @@ func RechargeEpay(tradeNo string, actualPaymentMethod string, callerIp string) (
 			topUp.PaymentMethod = actualPaymentMethod
 		}
 		var quotaErr error
-		quotaToAdd, quotaErr = common.QuotaFromDecimalStrict(
-			decimal.NewFromInt(topUp.Amount).Mul(decimal.NewFromFloat(common.QuotaPerUnit)),
-		)
+		if topUp.Money > 0 {
+			quotaToAdd, quotaErr = common.QuotaFromDecimalStrict(
+				decimal.NewFromFloat(topUp.Money).Mul(decimal.NewFromFloat(common.QuotaPerUnit)),
+			)
+		} else {
+			quotaToAdd, quotaErr = common.QuotaFromDecimalStrict(
+				decimal.NewFromInt(topUp.Amount).Mul(decimal.NewFromFloat(common.QuotaPerUnit)),
+			)
+		}
 		if quotaErr != nil || quotaToAdd <= 0 {
 			return ErrInvalidTopUpQuota
 		}

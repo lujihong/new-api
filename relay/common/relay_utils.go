@@ -204,8 +204,17 @@ func ValidateMultipartDirect(c *gin.Context, info *RelayInfo) *dto.TaskError {
 	var hasInputReference bool
 
 	var req TaskSubmitReq
-	if err := common.UnmarshalBodyReusable(c, &req); err != nil {
-		return createTaskError(err, "invalid_json", http.StatusBadRequest, true)
+	var err error
+	contentType := c.GetHeader("Content-Type")
+	if strings.HasPrefix(contentType, "multipart/form-data") {
+		req, err = validateMultipartTaskRequest(c, info, "")
+		if err != nil {
+			return createTaskError(err, "invalid_multipart_form", http.StatusBadRequest, true)
+		}
+	} else {
+		if err := common.UnmarshalBodyReusable(c, &req); err != nil {
+			return createTaskError(err, "invalid_json", http.StatusBadRequest, true)
+		}
 	}
 
 	prompt = req.Prompt

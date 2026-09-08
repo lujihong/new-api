@@ -21,6 +21,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/pkg/errors"
+	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
 
@@ -119,8 +120,12 @@ func (a *TaskAdaptor) EstimateBilling(c *gin.Context, info *relaycommon.RelayInf
 		size = "720x1280"
 	}
 
+	secondsRatio := float64(seconds) / 5.0
+	if secondsRatio <= 0 {
+		secondsRatio = 1.0
+	}
 	ratios := map[string]float64{
-		"seconds": float64(seconds),
+		"seconds": secondsRatio,
 		"size":    1,
 	}
 	if size == "1792x1024" || size == "1024x1792" {
@@ -326,6 +331,24 @@ func (a *TaskAdaptor) ConvertToOpenAIVideo(task *model.Task) ([]byte, error) {
 	var err error
 	if data, err = sjson.SetBytes(data, "id", task.TaskID); err != nil {
 		return nil, errors.Wrap(err, "set id failed")
+	}
+	if data, err = sjson.SetBytes(data, "task_id", task.TaskID); err != nil {
+		return nil, errors.Wrap(err, "set task_id failed")
+	}
+	proxyURL := taskcommon.BuildProxyURL(task.TaskID)
+	if task.Status == model.TaskStatusSuccess {
+		if gjson.GetBytes(data, "metadata.url").Exists() {
+			data, _ = sjson.SetBytes(data, "metadata.url", proxyURL)
+		}
+		if gjson.GetBytes(data, "video_url").Exists() {
+			data, _ = sjson.SetBytes(data, "video_url", proxyURL)
+		}
+		if gjson.GetBytes(data, "url").Exists() {
+			data, _ = sjson.SetBytes(data, "url", proxyURL)
+		}
+		if gjson.GetBytes(data, "output_url").Exists() {
+			data, _ = sjson.SetBytes(data, "output_url", proxyURL)
+		}
 	}
 	return data, nil
 }

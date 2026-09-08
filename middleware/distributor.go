@@ -190,12 +190,31 @@ func channelSupportsRequestPath(channel *model.Channel, requestPath string, requ
 // - application/x-www-form-urlencoded
 // - multipart/form-data
 func getModelFromRequest(c *gin.Context) (*ModelRequest, error) {
-	if strings.HasPrefix(c.Request.Header.Get("Content-Type"), "application/json") {
+	contentType := c.Request.Header.Get("Content-Type")
+	if strings.HasPrefix(contentType, "application/json") {
 		modelRequest, err := getModelFromJSONBody(c)
 		if err != nil {
 			return nil, errors.New(i18n.T(c, i18n.MsgDistributorInvalidRequest, map[string]any{"Error": err.Error()}))
 		}
 		return modelRequest, nil
+	}
+
+	if strings.HasPrefix(contentType, "multipart/form-data") {
+		formData, err := common.ParseMultipartFormReusable(c)
+		if err == nil && formData != nil {
+			model := ""
+			group := ""
+			if len(formData.Value["model"]) > 0 {
+				model = formData.Value["model"][0]
+			}
+			if len(formData.Value["group"]) > 0 {
+				group = formData.Value["group"][0]
+			}
+			return &ModelRequest{
+				Model: model,
+				Group: group,
+			}, nil
+		}
 	}
 
 	var modelRequest ModelRequest
@@ -327,6 +346,25 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 				return nil, false, err
 			}
 			modelRequest.Model = req.Model
+			relayMode = relayconstant.RelayModeVideoSubmit
+		} else if c.Request.Method == http.MethodGet {
+			relayMode = relayconstant.RelayModeVideoFetchByID
+			shouldSelectChannel = false
+			modelRequest.Model = getTaskOriginModelName(c)
+		}
+		if _, ok := c.Get("relay_mode"); !ok {
+			c.Set("relay_mode", relayMode)
+		}
+	} else if strings.Contains(c.Request.URL.Path, "contents/generations/tasks") {
+		relayMode := relayconstant.RelayModeUnknown
+		if c.Request.Method == http.MethodPost {
+			req, err := getModelFromRequest(c)
+			if err != nil {
+				return nil, false, err
+			}
+			if req != nil {
+				modelRequest.Model = req.Model
+			}
 			relayMode = relayconstant.RelayModeVideoSubmit
 		} else if c.Request.Method == http.MethodGet {
 			relayMode = relayconstant.RelayModeVideoFetchByID

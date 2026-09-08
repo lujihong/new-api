@@ -51,7 +51,7 @@ export function SystemBrand(props: SystemBrandProps) {
   const { logo } = useSystemConfig()
 
   const variant = props.variant ?? 'sidebar'
-  const name = status?.system_name || props.defaultName || 'New API'
+  const name = status?.system_name || props.defaultName || '鑫元宝云计算模型服务平台'
   const version =
     status?.version || props.defaultVersion || t('Unknown version')
 
@@ -61,15 +61,15 @@ export function SystemBrand(props: SystemBrandProps) {
         to='/'
         aria-label={t('Go to home')}
         className={cn(
-          'text-foreground inline-flex h-7 items-center gap-1.5 rounded-md px-1.5 text-sm font-medium transition-colors outline-none select-none',
+          'text-foreground inline-flex h-7 items-center gap-2 rounded-md px-1.5 text-sm font-medium transition-colors outline-none select-none',
           'hover:bg-accent focus-visible:ring-ring/40 focus-visible:ring-2'
         )}
       >
-        <div className='flex size-5 items-center justify-center overflow-hidden rounded-md'>
+        <div className='flex h-6 shrink-0 items-center justify-center overflow-hidden rounded-md'>
           <img
-            src={logo}
+            src={logo || '/logo.png'}
             alt={t('Logo')}
-            className='size-full rounded-md object-cover'
+            className='h-5 w-auto max-w-[80px] object-contain'
           />
         </div>
         <span className='max-w-[12rem] truncate'>{name}</span>
@@ -85,11 +85,11 @@ export function SystemBrand(props: SystemBrandProps) {
           className='hover:text-sidebar-foreground active:text-sidebar-foreground cursor-default hover:bg-transparent active:bg-transparent'
           render={<div />}
         >
-          <div className='flex aspect-square size-8 items-center justify-center overflow-hidden rounded-lg'>
+          <div className='flex h-8 shrink-0 items-center justify-start overflow-hidden rounded-lg'>
             <img
-              src={logo}
+              src={logo || '/logo.png'}
               alt={t('Logo')}
-              className='size-full rounded-lg object-cover'
+              className='h-7 w-auto max-w-[90px] object-contain'
             />
           </div>
           <div className='grid flex-1 text-start text-sm leading-tight group-data-[collapsible=icon]:hidden'>

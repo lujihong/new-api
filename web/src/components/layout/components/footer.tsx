@@ -124,26 +124,16 @@ function LegalLinks(props: { leadingSeparator?: boolean }) {
 // inline=true returns just the inner span for composition in a parent flex
 // row. inline=false wraps in a centered/right-aligned div (default).
 function ProjectAttribution(props: { currentYear: number; inline?: boolean }) {
-  const { t } = useTranslation()
   const content = (
-    <span className='text-muted-foreground/45'>
-      &copy; {props.currentYear}{' '}
-      <a
-        href='https://github.com/QuantumNous/new-api'
-        target='_blank'
-        rel='noopener noreferrer'
-        className='text-foreground/70 hover:text-foreground font-medium transition-colors'
-      >
-        {t('New API')}
-      </a>
-      . {t(NEW_API_FOOTER_ATTRIBUTION_KEY)}
+    <span className='text-muted-foreground/60 font-normal'>
+      &copy; {props.currentYear} 鑫元宝云计算（重庆）有限责任公司 版权所有
     </span>
   )
   if (props.inline) {
     return content
   }
   return (
-    <div className='text-muted-foreground/45 text-center text-xs sm:text-right'>
+    <div className='text-muted-foreground/60 text-center text-xs sm:text-right'>
       {content}
     </div>
   )
@@ -238,6 +228,17 @@ export function Footer(props: FooterProps) {
             />
             <div className='border-border/60 text-muted-foreground/45 flex w-full flex-wrap items-center justify-center gap-x-3 gap-y-1 border-t pt-4 text-xs sm:w-auto sm:justify-end sm:border-t-0 sm:border-l sm:pt-0 sm:pl-5'>
               <LegalLinks />
+              <span aria-hidden='true' className='text-muted-foreground/30'>
+                ·
+              </span>
+              <a
+                href='https://beian.miit.gov.cn/'
+                target='_blank'
+                rel='noopener noreferrer'
+                className='hover:text-foreground transition-colors duration-200'
+              >
+                渝ICP备2024036208号
+              </a>
               <ProjectAttribution currentYear={currentYear} inline />
             </div>
           </div>
@@ -299,6 +300,17 @@ export function Footer(props: FooterProps) {
               {props.copyright ?? t('footer.defaultCopyright')}
             </span>
             <LegalLinks leadingSeparator />
+            <span aria-hidden='true' className='text-muted-foreground/30'>
+              ·
+            </span>
+            <a
+              href='https://beian.miit.gov.cn/'
+              target='_blank'
+              rel='noopener noreferrer'
+              className='hover:text-foreground transition-colors duration-200'
+            >
+              渝ICP备2024036208号
+            </a>
           </div>
           <ProjectAttribution currentYear={currentYear} />
         </div>

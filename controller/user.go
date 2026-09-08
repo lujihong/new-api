@@ -397,6 +397,83 @@ func GetUser(c *gin.Context) {
 	return
 }
 
+func GetActiveUserKey(c *gin.Context) {
+	userId := c.GetInt("id")
+	user, err := model.GetUserById(userId, false)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	var token model.Token
+	err = model.DB.Where("user_id = ? AND status = 1", userId).Order("id asc").First(&token).Error
+	if err != nil {
+		key, genErr := common.GenerateKey()
+		if genErr != nil {
+			common.ApiError(c, genErr)
+			return
+		}
+		token = model.Token{
+			UserId:         userId,
+			Name:           user.Username + "的默认令牌",
+			Key:            key,
+			CreatedTime:    common.GetTimestamp(),
+			AccessedTime:   common.GetTimestamp(),
+			ExpiredTime:    -1,
+			RemainQuota:    0,
+			UnlimitedQuota: true,
+			Status:         1,
+		}
+		if insertErr := token.Insert(); insertErr != nil {
+			common.ApiError(c, insertErr)
+			return
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"key":      token.Key,
+			"user_id":  user.Id,
+			"username": user.Username,
+			"email":    user.Email,
+			"role":     user.Role,
+			"quota":    user.Quota,
+			"aff_code": user.AffCode,
+		},
+	})
+}
+
+func GetQuotaByTokenKey(c *gin.Context) {
+	key := strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer ")
+	if key == "" {
+		key = c.Query("key")
+	}
+	if key == "" {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": "缺少Token"})
+		return
+	}
+	var token model.Token
+	err := model.DB.Where("key = ? AND status = 1", key).First(&token).Error
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": "无效的Token"})
+		return
+	}
+	var user model.User
+	if err := model.DB.Select("id, username, email, quota, role").Where("id = ?", token.UserId).First(&user).Error; err != nil {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": "用户不存在"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"quota":    user.Quota,
+			"username": user.Username,
+			"user_id":  user.Id,
+		},
+	})
+}
+
 func GenerateAccessToken(c *gin.Context) {
 	id := c.GetInt("id")
 	// get rand int 28-32

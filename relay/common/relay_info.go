@@ -865,8 +865,20 @@ type TaskRelayInfo struct {
 	LockedChannel any
 }
 
+type ContentItemReq struct {
+	Type     string `json:"type"`
+	Text     string `json:"text,omitempty"`
+	ImageURL *struct {
+		URL string `json:"url"`
+	} `json:"image_url,omitempty"`
+	VideoURL *struct {
+		URL string `json:"url"`
+	} `json:"video_url,omitempty"`
+}
+
 type TaskSubmitReq struct {
 	Prompt         string                 `json:"prompt"`
+	Content        []ContentItemReq       `json:"content,omitempty"`
 	Model          string                 `json:"model,omitempty"`
 	Mode           string                 `json:"mode,omitempty"`
 	Image          string                 `json:"image,omitempty"`
@@ -898,6 +910,22 @@ func (t *TaskSubmitReq) UnmarshalJSON(data []byte) error {
 
 	if err := common.Unmarshal(data, &aux); err != nil {
 		return err
+	}
+
+	if t.Prompt == "" && len(t.Content) > 0 {
+		for _, item := range t.Content {
+			if item.Type == "text" || item.Text != "" {
+				t.Prompt = item.Text
+				break
+			}
+		}
+	}
+	if len(t.Images) == 0 && len(t.Content) > 0 {
+		for _, item := range t.Content {
+			if (item.Type == "image_url" || item.Type == "image") && item.ImageURL != nil && item.ImageURL.URL != "" {
+				t.Images = append(t.Images, item.ImageURL.URL)
+			}
+		}
 	}
 
 	if len(aux.Duration) > 0 {

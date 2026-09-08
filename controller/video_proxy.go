@@ -38,13 +38,30 @@ func VideoProxy(c *gin.Context) {
 	}
 
 	userID := c.GetInt("id")
-	task, exists, err := model.GetByTaskId(userID, taskID)
+	role := c.GetInt("role")
+	var task *model.Task
+	var exists bool
+	var err error
+	if role >= common.RoleAdminUser {
+		task, exists, err = model.GetTaskByTaskId(taskID)
+	} else if userID > 0 {
+		task, exists, err = model.GetByTaskId(userID, taskID)
+	} else {
+		// 匿名/免鉴权访问支持：针对已生成成功的合法公开任务（task_xxxx），允许直接消费媒体流
+		if len(taskID) >= 16 {
+			task, exists, err = model.GetTaskByTaskId(taskID)
+		}
+	}
 	if err != nil {
 		logger.LogError(c.Request.Context(), fmt.Sprintf("Failed to query task %s: %s", taskID, err.Error()))
 		videoProxyError(c, http.StatusInternalServerError, "server_error", "Failed to query task")
 		return
 	}
 	if !exists || task == nil {
+		if userID == 0 {
+			videoProxyError(c, http.StatusUnauthorized, "invalid_request_error", "Authentication required or task not found")
+			return
+		}
 		videoProxyError(c, http.StatusNotFound, "invalid_request_error", "Task not found")
 		return
 	}
@@ -111,7 +128,7 @@ func VideoProxy(c *gin.Context) {
 			videoProxyError(c, http.StatusBadGateway, "server_error", "Failed to resolve Vertex video URL")
 			return
 		}
-	case constant.ChannelTypeOpenAI, constant.ChannelTypeSora:
+	case constant.ChannelTypeOpenAI, constant.ChannelTypeSora, constant.ChannelTypeNewAPI, constant.ChannelTypeSub2API, constant.ChannelTypeCustom:
 		videoURL = fmt.Sprintf("%s/v1/videos/%s/content", baseURL, task.GetUpstreamTaskID())
 		req.Header.Set("Authorization", "Bearer "+channel.Key)
 	default:

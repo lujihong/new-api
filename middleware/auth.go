@@ -248,9 +248,23 @@ func WssAuth(c *gin.Context) {
 func TokenOrUserAuth() func(c *gin.Context) {
 	return func(c *gin.Context) {
 		raw, ok := authorizationToken(c.GetHeader("Authorization"))
+		if !ok {
+			// Try query parameters for browser media requests (video tag, new window preview, downloads)
+			tokenParam := c.Query("token")
+			if tokenParam == "" {
+				tokenParam = c.Query("access_token")
+			}
+			if tokenParam == "" {
+				tokenParam = c.Query("key")
+			}
+			if tokenParam != "" {
+				raw, ok = authorizationToken(tokenParam)
+			}
+		}
 		if ok {
 			identity, internal, err := service.ParseDashboardAccessToken(raw)
 			if !internal {
+				c.Request.Header.Set("Authorization", "Bearer "+raw)
 				TokenAuth()(c)
 				return
 			}
@@ -267,8 +281,9 @@ func TokenOrUserAuth() func(c *gin.Context) {
 			c.Next()
 			return
 		}
-		// Opaque credentials are relay API keys here, never dashboard PATs.
-		TokenAuth()(c)
+		// When no credentials are provided (e.g. browser video player or anonymous direct download),
+		// allow request to proceed to handlers that support public completed task streams.
+		c.Next()
 	}
 }
 

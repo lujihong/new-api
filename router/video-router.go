@@ -14,29 +14,52 @@ func SetVideoRouter(router *gin.Engine) {
 	videoProxyRouter.Use(middleware.TokenOrUserAuth())
 	{
 		videoProxyRouter.GET("/videos/:task_id/content", controller.VideoProxy)
+		videoProxyRouter.HEAD("/videos/:task_id/content", controller.VideoProxy)
 	}
 
 	videoV1Router := router.Group("/v1")
 	videoV1Router.Use(middleware.RouteTag("relay"))
-	videoV1Router.Use(middleware.TokenAuth(), middleware.Distribute())
+	videoV1Router.Use(middleware.TokenAuth())
 	{
-		videoV1Router.POST("/video/generations", controller.RelayTask)
+		videoV1Router.POST("/video/generations", middleware.Distribute(), controller.RelayTask)
 		videoV1Router.GET("/video/generations/:task_id", controller.RelayTaskFetch)
-		videoV1Router.POST("/videos/:video_id/remix", controller.RelayTask)
+		videoV1Router.POST("/videos/:video_id/remix", middleware.Distribute(), controller.RelayTask)
 	}
 	// openai compatible API video routes
 	// docs: https://platform.openai.com/docs/api-reference/videos/create
 	{
-		videoV1Router.POST("/videos", controller.RelayTask)
+		videoV1Router.POST("/videos", middleware.Distribute(), controller.RelayTask)
 		videoV1Router.GET("/videos/:task_id", controller.RelayTaskFetch)
+	}
+
+	// VolcEngine Doubao Video compatible API routes (/v1/contents/generations/tasks)
+	{
+		videoV1Router.POST("/contents/generations/tasks", middleware.Distribute(), controller.RelayTask)
+		videoV1Router.GET("/contents/generations/tasks/:task_id", controller.RelayTaskFetch)
+	}
+
+	doubaoV3Router := router.Group("/api/v3")
+	doubaoV3Router.Use(middleware.RouteTag("relay"))
+	doubaoV3Router.Use(middleware.TokenAuth())
+	{
+		doubaoV3Router.POST("/contents/generations/tasks", middleware.Distribute(), controller.RelayTask)
+		doubaoV3Router.GET("/contents/generations/tasks/:task_id", controller.RelayTaskFetch)
+	}
+
+	doubaoRootRouter := router.Group("/contents")
+	doubaoRootRouter.Use(middleware.RouteTag("relay"))
+	doubaoRootRouter.Use(middleware.TokenAuth())
+	{
+		doubaoRootRouter.POST("/generations/tasks", middleware.Distribute(), controller.RelayTask)
+		doubaoRootRouter.GET("/generations/tasks/:task_id", controller.RelayTaskFetch)
 	}
 
 	klingV1Router := router.Group("/kling/v1")
 	klingV1Router.Use(middleware.RouteTag("relay"))
-	klingV1Router.Use(middleware.KlingRequestConvert(), middleware.TokenAuth(), middleware.Distribute())
+	klingV1Router.Use(middleware.KlingRequestConvert(), middleware.TokenAuth())
 	{
-		klingV1Router.POST("/videos/text2video", controller.RelayTask)
-		klingV1Router.POST("/videos/image2video", controller.RelayTask)
+		klingV1Router.POST("/videos/text2video", middleware.Distribute(), controller.RelayTask)
+		klingV1Router.POST("/videos/image2video", middleware.Distribute(), controller.RelayTask)
 		klingV1Router.GET("/videos/text2video/:task_id", controller.RelayTaskFetch)
 		klingV1Router.GET("/videos/image2video/:task_id", controller.RelayTaskFetch)
 	}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -283,10 +284,37 @@ func SendEmailVerification(c *gin.Context) {
 	}
 	code := common.GenerateVerificationCode(6)
 	common.RegisterVerificationCodeWithKey(email, code, common.EmailVerificationPurpose)
-	subject := fmt.Sprintf("%s邮箱验证邮件", common.SystemName)
-	content := fmt.Sprintf("<p>您好，你正在进行%s邮箱验证。</p>"+
-		"<p>您的验证码为: <strong>%s</strong></p>"+
-		"<p>验证码 %d 分钟内有效，如果不是本人操作，请忽略。</p>", common.SystemName, code, common.VerificationValidMinutes)
+	subject := fmt.Sprintf("【%s】您的注册验证码为 %s", common.SystemName, code)
+	emailTpl := `<div style="background-color: #f4f6f9; padding: 35px 15px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #1e293b; line-height: 1.6;">
+  <table align="center" border="0" cellpadding="0" cellspacing="0" width="100%" style="max-width: 560px; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 16px rgba(0,0,0,0.06); border: 1px solid #e2e8f0;">
+    <tr>
+      <td style="background: linear-gradient(135deg, #0ea5e9 0%, #2563eb 100%); padding: 28px 40px; text-align: center;">
+        <h1 style="color: #ffffff; margin: 0; font-size: 20px; font-weight: 600; letter-spacing: 0.5px;">{{SYSTEM_NAME}}</h1>
+        <p style="color: rgba(255,255,255,0.85); margin: 6px 0 0 0; font-size: 13px;">安全邮箱验证中心</p>
+      </td>
+    </tr>
+    <tr>
+      <td style="padding: 35px 40px;">
+        <p style="font-size: 15px; color: #334155; margin-top: 0;">您好！</p>
+        <p style="font-size: 14px; color: #475569; margin-bottom: 24px;">您正在申请注册或验证 <strong>{{SYSTEM_NAME}}</strong> 账户，请在验证码输入框中填写以下 6 位验证码以完成身份核验：</p>
+        <div style="background-color: #f8fafc; border: 1px dashed #cbd5e1; border-radius: 8px; padding: 20px; text-align: center; margin: 24px 0;">
+          <span style="font-size: 32px; font-weight: bold; letter-spacing: 8px; color: #0284c7; font-family: Monaco, Menlo, Consolas, monospace; margin-left: 8px;">{{CODE}}</span>
+        </div>
+        <p style="font-size: 13px; color: #64748b; margin-bottom: 8px;">• 该验证码在 <strong>{{MINUTES}} 分钟</strong> 内有效，请尽快完成验证。</p>
+        <p style="font-size: 13px; color: #64748b; margin-top: 0;">• 如非您本人操作，请忽略此邮件，您的账户信息不会受到任何影响。</p>
+      </td>
+    </tr>
+    <tr>
+      <td style="background-color: #f8fafc; padding: 20px 40px; border-top: 1px solid #f1f5f9; text-align: center; font-size: 12px; color: #94a3b8;">
+        <p style="margin: 0 0 6px 0;">鑫元宝云计算（重庆）有限责任公司 · 官方服务邮件</p>
+        <p style="margin: 0;"><a href="https://api.xybcloud.com" style="color: #0284c7; text-decoration: none;">api.xybcloud.com</a> · <a href="https://beian.miit.gov.cn/" style="color: #94a3b8; text-decoration: none;">渝ICP备2024036208号</a></p>
+      </td>
+    </tr>
+  </table>
+</div>`
+	content := strings.ReplaceAll(emailTpl, "{{SYSTEM_NAME}}", common.SystemName)
+	content = strings.ReplaceAll(content, "{{CODE}}", code)
+	content = strings.ReplaceAll(content, "{{MINUTES}}", strconv.Itoa(common.VerificationValidMinutes))
 	err := common.SendEmail(subject, email, content)
 	if err != nil {
 		common.ApiError(c, err)
@@ -309,11 +337,38 @@ func SendPasswordResetEmail(c *gin.Context) {
 		code := common.GenerateVerificationCode(0)
 		common.RegisterVerificationCodeWithKey(email, code, common.PasswordResetPurpose)
 		link := fmt.Sprintf("%s/user/reset?email=%s&token=%s", system_setting.ServerAddress, email, code)
-		subject := fmt.Sprintf("%s密码重置", common.SystemName)
-		content := fmt.Sprintf("<p>您好，你正在进行%s密码重置。</p>"+
-			"<p>点击 <a href='%s'>此处</a> 进行密码重置。</p>"+
-			"<p>如果链接无法点击，请尝试点击下面的链接或将其复制到浏览器中打开：<br> %s </p>"+
-			"<p>重置链接 %d 分钟内有效，如果不是本人操作，请忽略。</p>", common.SystemName, link, link, common.VerificationValidMinutes)
+		subject := fmt.Sprintf("【%s】密码重置申请", common.SystemName)
+		emailTpl := `<div style="background-color: #f4f6f9; padding: 35px 15px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #1e293b; line-height: 1.6;">
+  <table align="center" border="0" cellpadding="0" cellspacing="0" width="100%" style="max-width: 560px; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 16px rgba(0,0,0,0.06); border: 1px solid #e2e8f0;">
+    <tr>
+      <td style="background: linear-gradient(135deg, #0ea5e9 0%, #2563eb 100%); padding: 28px 40px; text-align: center;">
+        <h1 style="color: #ffffff; margin: 0; font-size: 20px; font-weight: 600; letter-spacing: 0.5px;">{{SYSTEM_NAME}}</h1>
+        <p style="color: rgba(255,255,255,0.85); margin: 6px 0 0 0; font-size: 13px;">密码安全重置中心</p>
+      </td>
+    </tr>
+    <tr>
+      <td style="padding: 35px 40px;">
+        <p style="font-size: 15px; color: #334155; margin-top: 0;">您好！</p>
+        <p style="font-size: 14px; color: #475569; margin-bottom: 24px;">您正在申请重置 <strong>{{SYSTEM_NAME}}</strong> 账户的登录密码。请点击下方按钮完成密码重置：</p>
+        <div style="text-align: center; margin: 28px 0;">
+          <a href="{{LINK}}" target="_blank" style="display: inline-block; background: #0284c7; color: #ffffff; text-decoration: none; padding: 12px 32px; border-radius: 8px; font-size: 14px; font-weight: 600; box-shadow: 0 2px 8px rgba(2,132,199,0.3);">立即重置密码</a>
+        </div>
+        <p style="font-size: 12px; color: #64748b; word-break: break-all; margin-bottom: 16px;">如果按钮无法点击，请复制以下链接在浏览器打开：<br><a href="{{LINK}}" style="color: #0284c7;">{{LINK}}</a></p>
+        <p style="font-size: 13px; color: #64748b; margin-bottom: 8px;">• 该重置链接在 <strong>{{MINUTES}} 分钟</strong> 内有效，请尽快处理。</p>
+        <p style="font-size: 13px; color: #64748b; margin-top: 0;">• 如非您本人操作，请忽略此邮件，您的原密码依然安全。</p>
+      </td>
+    </tr>
+    <tr>
+      <td style="background-color: #f8fafc; padding: 20px 40px; border-top: 1px solid #f1f5f9; text-align: center; font-size: 12px; color: #94a3b8;">
+        <p style="margin: 0 0 6px 0;">鑫元宝云计算（重庆）有限责任公司 · 官方服务邮件</p>
+        <p style="margin: 0;"><a href="https://api.xybcloud.com" style="color: #0284c7; text-decoration: none;">api.xybcloud.com</a> · <a href="https://beian.miit.gov.cn/" style="color: #94a3b8; text-decoration: none;">渝ICP备2024036208号</a></p>
+      </td>
+    </tr>
+  </table>
+</div>`
+		content := strings.ReplaceAll(emailTpl, "{{SYSTEM_NAME}}", common.SystemName)
+		content = strings.ReplaceAll(content, "{{LINK}}", link)
+		content = strings.ReplaceAll(content, "{{MINUTES}}", strconv.Itoa(common.VerificationValidMinutes))
 		err := common.SendEmail(subject, email, content)
 		if err != nil {
 			logger.LogError(c.Request.Context(), fmt.Sprintf("failed to send password reset email to %s: %s", email, err.Error()))

@@ -103,6 +103,7 @@ export function Home() {
             content={content}
             className='custom-home-content'
           />
+          <Footer />
         </PublicLayout>
       )
     }
@@ -116,6 +117,7 @@ export function Home() {
             className='custom-home-content'
           />
         </div>
+        <Footer />
       </PublicLayout>
     )
   }

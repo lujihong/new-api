@@ -606,13 +606,13 @@ export const ModelPricingEditorPanel = forwardRef<
                         render={({ field }) => (
                           <FormItem className='contents'>
                             <Field>
-                              <FieldLabel>{t('Fixed price')}</FieldLabel>
+                              <FieldLabel>{t('Fixed price')} (元 / 次)</FieldLabel>
                               <FormControl>
                                 <InputGroup>
-                                  <InputGroupAddon>$</InputGroupAddon>
+                                  <InputGroupAddon>¥</InputGroupAddon>
                                   <InputGroupInput
                                     inputMode='decimal'
-                                    placeholder='0.01'
+                                    placeholder='4.74'
                                     {...field}
                                     onChange={(event) => {
                                       const value = event.target.value
@@ -622,14 +622,12 @@ export const ModelPricingEditorPanel = forwardRef<
                                     }}
                                   />
                                   <InputGroupAddon align='inline-end'>
-                                    {t('per request')}
+                                    元 / 次
                                   </InputGroupAddon>
                                 </InputGroup>
                               </FormControl>
                               <FieldDescription>
-                                {t(
-                                  'Cost in USD per request, regardless of tokens used.'
-                                )}
+                                单次调用的基准费用（以人民币元为单位）。用户充值 1 元 = 10 积分，系统将自动按该比例精确扣除对应算力积分。
                               </FieldDescription>
                               <FormMessage />
                             </Field>

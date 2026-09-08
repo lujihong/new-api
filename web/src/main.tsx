@@ -86,7 +86,6 @@ const queryClient = new QueryClient({
       if (error instanceof AxiosError) {
         if (error.response?.status === 500) {
           toast.error(i18next.t('Internal Server Error!'))
-          router.navigate({ to: '/500' })
         }
       }
     },
@@ -130,10 +129,13 @@ if (!rootElement) {
       if (saved) {
         const s = JSON.parse(saved)
         if (s?.system_name) apply(s.system_name)
+        else apply('鑫元宝云计算模型服务平台')
         if (s?.logo) applyFaviconToDom(s.logo)
+      } else {
+        apply('鑫元宝云计算模型服务平台')
       }
     } catch {
-      /* empty */
+      apply('鑫元宝云计算模型服务平台')
     }
     // Background refresh
     getStatus()
