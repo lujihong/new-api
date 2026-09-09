@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
@@ -157,11 +158,35 @@ func rateLimitFactory(maxRequestNum int, duration int64, mark string) func(c *gi
 	}
 }
 
-func GlobalWebRateLimit() func(c *gin.Context) {
-	if common.GlobalWebRateLimitEnable {
-		return rateLimitFactory(common.GlobalWebRateLimitNum, common.GlobalWebRateLimitDuration, "GW")
+func isStaticWebPath(p string) bool {
+	if strings.HasPrefix(p, "/static/") || strings.HasPrefix(p, "/assets/") ||
+		strings.HasPrefix(p, "/favicon") || strings.HasPrefix(p, "/logo") ||
+		strings.HasPrefix(p, "/apple-touch-icon") || strings.HasPrefix(p, "/android-chrome") {
+		return true
 	}
-	return defNext
+	dot := strings.LastIndex(p, ".")
+	if dot != -1 {
+		ext := strings.ToLower(p[dot:])
+		switch ext {
+		case ".js", ".mjs", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".woff", ".woff2", ".ttf", ".eot", ".webp", ".map", ".json":
+			return true
+		}
+	}
+	return false
+}
+
+func GlobalWebRateLimit() func(c *gin.Context) {
+	if !common.GlobalWebRateLimitEnable {
+		return defNext
+	}
+	limiter := rateLimitFactory(common.GlobalWebRateLimitNum, common.GlobalWebRateLimitDuration, "GW")
+	return func(c *gin.Context) {
+		if isStaticWebPath(c.Request.URL.Path) {
+			c.Next()
+			return
+		}
+		limiter(c)
+	}
 }
 
 func GlobalAPIRateLimit() func(c *gin.Context) {
