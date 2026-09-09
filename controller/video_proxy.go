@@ -169,10 +169,17 @@ func resolveLegacyTaskContentRequest(task *model.Task, method string) *relaychan
 				target = d.VideoURL
 			}
 			if target != "" && !isTaskMediaFallbackLoop(target, task.TaskID) {
+				headers := map[string]string{}
+				if task.ChannelId > 0 && strings.Contains(target, "/videos/") && strings.HasSuffix(target, "/content") {
+					if ch, chErr := model.CacheGetChannel(task.ChannelId); chErr == nil && ch != nil && ch.Key != "" {
+						headers["Authorization"] = "Bearer " + ch.Key
+					}
+				}
 				return &relaychannel.TaskContentRequest{
 					URL:            target,
 					Method:         http.MethodGet,
-					Credentialless: true,
+					Headers:        headers,
+					Credentialless: len(headers) == 0,
 				}
 			}
 		}
