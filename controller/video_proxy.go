@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -114,6 +115,9 @@ func VideoProxy(c *gin.Context) {
 		}
 	}
 	if descriptor == nil {
+		descriptor = resolveLegacyTaskContentRequest(task, c.Request.Method)
+	}
+	if descriptor == nil {
 		resultURL := task.GetResultURL()
 		if isTaskMediaFallbackLoop(resultURL, task.TaskID) {
 			writeTaskMediaProxyError(c, &taskMediaProxyError{
@@ -131,6 +135,71 @@ func VideoProxy(c *gin.Context) {
 	if err := proxyTaskMedia(c, task, descriptor); err != nil {
 		writeTaskMediaProxyError(c, err)
 	}
+}
+
+func resolveLegacyTaskContentRequest(task *model.Task, method string) *relaychannel.TaskContentRequest {
+	if task == nil {
+		return nil
+	}
+	// 1. 优先从 task.Data 中提取原始源视频地址
+	if len(task.Data) > 0 {
+		var d struct {
+			Metadata struct {
+				URL      string `json:"url"`
+				VideoURL string `json:"video_url"`
+			} `json:"metadata"`
+			Content struct {
+				VideoURL string `json:"video_url"`
+			} `json:"content"`
+			URL      string `json:"url"`
+			VideoURL string `json:"video_url"`
+		}
+		if json.Unmarshal(task.Data, &d) == nil {
+			target := d.Metadata.URL
+			if target == "" {
+				target = d.Metadata.VideoURL
+			}
+			if target == "" {
+				target = d.Content.VideoURL
+			}
+			if target == "" {
+				target = d.URL
+			}
+			if target == "" {
+				target = d.VideoURL
+			}
+			if target != "" && !isTaskMediaFallbackLoop(target, task.TaskID) {
+				return &relaychannel.TaskContentRequest{
+					URL:            target,
+					Method:         http.MethodGet,
+					Credentialless: true,
+				}
+			}
+		}
+	}
+
+	// 2. 针对 OpenAI/Sora/NewAPI 等聚合渠道任务，向上游构造带 Key 代理请求
+	if task.ChannelId > 0 && task.GetUpstreamTaskID() != "" {
+		channel, err := model.CacheGetChannel(task.ChannelId)
+		if err == nil && channel != nil {
+			baseURL := channel.GetBaseURL()
+			if baseURL != "" {
+				upstreamURL := fmt.Sprintf("%s/v1/videos/%s/content", strings.TrimRight(baseURL, "/"), task.GetUpstreamTaskID())
+				headers := map[string]string{}
+				if channel.Key != "" {
+					headers["Authorization"] = "Bearer " + channel.Key
+				}
+				return &relaychannel.TaskContentRequest{
+					URL:            upstreamURL,
+					Method:         http.MethodGet,
+					Headers:        headers,
+					Credentialless: len(headers) == 0,
+				}
+			}
+		}
+	}
+
+	return nil
 }
 
 func proxyTaskMedia(c *gin.Context, task *model.Task, descriptor *relaychannel.TaskContentRequest) error {

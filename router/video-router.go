@@ -8,15 +8,6 @@ import (
 )
 
 func SetVideoRouter(router *gin.Engine) {
-	// Video proxy: accepts either session auth (dashboard), token auth (API clients), or public completed streams
-	videoProxyRouter := router.Group("/v1")
-	videoProxyRouter.Use(middleware.RouteTag("relay"))
-	videoProxyRouter.Use(middleware.TokenOrUserAuth())
-	{
-		videoProxyRouter.GET("/videos/:task_id/content", controller.VideoProxy)
-		videoProxyRouter.HEAD("/videos/:task_id/content", controller.VideoProxy)
-	}
-
 	videoSharedRouter := router.Group("/v1")
 	videoSharedRouter.Use(middleware.RouteTag("relay"))
 	videoSharedRouter.Use(middleware.TokenAuth())
@@ -38,8 +29,6 @@ func SetVideoRouter(router *gin.Engine) {
 	{
 		videoV1Router.GET("/video/generations/:task_id", controller.RelayTaskFetch)
 		videoV1Router.POST("/videos/:video_id/remix", middleware.Distribute(), controller.RelayTask)
-		videoV1Router.POST("/videos", middleware.Distribute(), controller.RelayTask)
-		videoV1Router.GET("/videos/:task_id", controller.RelayTaskFetch)
 		videoV1Router.POST("/contents/generations/tasks", middleware.Distribute(), controller.RelayTask)
 		videoV1Router.GET("/contents/generations/tasks/:task_id", controller.RelayTaskFetch)
 	}

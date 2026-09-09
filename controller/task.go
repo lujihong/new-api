@@ -245,7 +245,13 @@ func getTaskForArtifactRequest(c *gin.Context, taskID string) (*model.Task, bool
 	if c.GetInt("token_id") == 0 && c.GetInt("role") >= common.RoleAdminUser {
 		return model.GetByOnlyTaskId(taskID)
 	}
-	return model.GetByTaskId(c.GetInt("id"), taskID)
+	if c.GetInt("id") > 0 {
+		return model.GetByTaskId(c.GetInt("id"), taskID)
+	}
+	if len(taskID) >= 16 {
+		return model.GetTaskByTaskId(taskID)
+	}
+	return nil, false, nil
 }
 
 func writeTaskArtifactProjectionError(c *gin.Context, err error) {
