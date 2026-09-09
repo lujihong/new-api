@@ -1,0 +1,333 @@
+diff --git a/controller/misc.go b/controller/misc.go
+index 7343b12f1..32952aa90 100644
+--- a/controller/misc.go
++++ b/controller/misc.go
+@@ -5,6 +5,7 @@ import (
+ 	"errors"
+ 	"fmt"
+ 	"net/http"
++	"strconv"
+ 	"strings"
+ 
+ 	"github.com/QuantumNous/new-api/common"
+@@ -283,10 +284,37 @@ func SendEmailVerification(c *gin.Context) {
+ 	}
+ 	code := common.GenerateVerificationCode(6)
+ 	common.RegisterVerificationCodeWithKey(email, code, common.EmailVerificationPurpose)
+-	subject := fmt.Sprintf("%s邮箱验证邮件", common.SystemName)
+-	content := fmt.Sprintf("<p>您好，你正在进行%s邮箱验证。</p>"+
+-		"<p>您的验证码为: <strong>%s</strong></p>"+
+-		"<p>验证码 %d 分钟内有效，如果不是本人操作，请忽略。</p>", common.SystemName, code, common.VerificationValidMinutes)
++	subject := fmt.Sprintf("【%s】您的注册验证码为 %s", common.SystemName, code)
++	emailTpl := `<div style="background-color: #f4f6f9; padding: 35px 15px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #1e293b; line-height: 1.6;">
++  <table align="center" border="0" cellpadding="0" cellspacing="0" width="100%" style="max-width: 560px; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 16px rgba(0,0,0,0.06); border: 1px solid #e2e8f0;">
++    <tr>
++      <td style="background: linear-gradient(135deg, #0ea5e9 0%, #2563eb 100%); padding: 28px 40px; text-align: center;">
++        <h1 style="color: #ffffff; margin: 0; font-size: 20px; font-weight: 600; letter-spacing: 0.5px;">{{SYSTEM_NAME}}</h1>
++        <p style="color: rgba(255,255,255,0.85); margin: 6px 0 0 0; font-size: 13px;">安全邮箱验证中心</p>
++      </td>
++    </tr>
++    <tr>
++      <td style="padding: 35px 40px;">
++        <p style="font-size: 15px; color: #334155; margin-top: 0;">您好！</p>
++        <p style="font-size: 14px; color: #475569; margin-bottom: 24px;">您正在申请注册或验证 <strong>{{SYSTEM_NAME}}</strong> 账户，请在验证码输入框中填写以下 6 位验证码以完成身份核验：</p>
++        <div style="background-color: #f8fafc; border: 1px dashed #cbd5e1; border-radius: 8px; padding: 20px; text-align: center; margin: 24px 0;">
++          <span style="font-size: 32px; font-weight: bold; letter-spacing: 8px; color: #0284c7; font-family: Monaco, Menlo, Consolas, monospace; margin-left: 8px;">{{CODE}}</span>
++        </div>
++        <p style="font-size: 13px; color: #64748b; margin-bottom: 8px;">• 该验证码在 <strong>{{MINUTES}} 分钟</strong> 内有效，请尽快完成验证。</p>
++        <p style="font-size: 13px; color: #64748b; margin-top: 0;">• 如非您本人操作，请忽略此邮件，您的账户信息不会受到任何影响。</p>
++      </td>
++    </tr>
++    <tr>
++      <td style="background-color: #f8fafc; padding: 20px 40px; border-top: 1px solid #f1f5f9; text-align: center; font-size: 12px; color: #94a3b8;">
++        <p style="margin: 0 0 6px 0;">鑫元宝云计算（重庆）有限责任公司 · 官方服务邮件</p>
++        <p style="margin: 0;"><a href="https://api.xybcloud.com" style="color: #0284c7; text-decoration: none;">api.xybcloud.com</a> · <a href="https://beian.miit.gov.cn/" style="color: #94a3b8; text-decoration: none;">渝ICP备2024036208号</a></p>
++      </td>
++    </tr>
++  </table>
++</div>`
++	content := strings.ReplaceAll(emailTpl, "{{SYSTEM_NAME}}", common.SystemName)
++	content = strings.ReplaceAll(content, "{{CODE}}", code)
++	content = strings.ReplaceAll(content, "{{MINUTES}}", strconv.Itoa(common.VerificationValidMinutes))
+ 	err := common.SendEmail(subject, email, content)
+ 	if err != nil {
+ 		common.ApiError(c, err)
+@@ -309,11 +337,38 @@ func SendPasswordResetEmail(c *gin.Context) {
+ 		code := common.GenerateVerificationCode(0)
+ 		common.RegisterVerificationCodeWithKey(email, code, common.PasswordResetPurpose)
+ 		link := fmt.Sprintf("%s/user/reset?email=%s&token=%s", system_setting.ServerAddress, email, code)
+-		subject := fmt.Sprintf("%s密码重置", common.SystemName)
+-		content := fmt.Sprintf("<p>您好，你正在进行%s密码重置。</p>"+
+-			"<p>点击 <a href='%s'>此处</a> 进行密码重置。</p>"+
+-			"<p>如果链接无法点击，请尝试点击下面的链接或将其复制到浏览器中打开：<br> %s </p>"+
+-			"<p>重置链接 %d 分钟内有效，如果不是本人操作，请忽略。</p>", common.SystemName, link, link, common.VerificationValidMinutes)
++		subject := fmt.Sprintf("【%s】密码重置申请", common.SystemName)
++		emailTpl := `<div style="background-color: #f4f6f9; padding: 35px 15px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #1e293b; line-height: 1.6;">
++  <table align="center" border="0" cellpadding="0" cellspacing="0" width="100%" style="max-width: 560px; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 16px rgba(0,0,0,0.06); border: 1px solid #e2e8f0;">
++    <tr>
++      <td style="background: linear-gradient(135deg, #0ea5e9 0%, #2563eb 100%); padding: 28px 40px; text-align: center;">
++        <h1 style="color: #ffffff; margin: 0; font-size: 20px; font-weight: 600; letter-spacing: 0.5px;">{{SYSTEM_NAME}}</h1>
++        <p style="color: rgba(255,255,255,0.85); margin: 6px 0 0 0; font-size: 13px;">密码安全重置中心</p>
++      </td>
++    </tr>
++    <tr>
++      <td style="padding: 35px 40px;">
++        <p style="font-size: 15px; color: #334155; margin-top: 0;">您好！</p>
++        <p style="font-size: 14px; color: #475569; margin-bottom: 24px;">您正在申请重置 <strong>{{SYSTEM_NAME}}</strong> 账户的登录密码。请点击下方按钮完成密码重置：</p>
++        <div style="text-align: center; margin: 28px 0;">
++          <a href="{{LINK}}" target="_blank" style="display: inline-block; background: #0284c7; color: #ffffff; text-decoration: none; padding: 12px 32px; border-radius: 8px; font-size: 14px; font-weight: 600; box-shadow: 0 2px 8px rgba(2,132,199,0.3);">立即重置密码</a>
++        </div>
++        <p style="font-size: 12px; color: #64748b; word-break: break-all; margin-bottom: 16px;">如果按钮无法点击，请复制以下链接在浏览器打开：<br><a href="{{LINK}}" style="color: #0284c7;">{{LINK}}</a></p>
++        <p style="font-size: 13px; color: #64748b; margin-bottom: 8px;">• 该重置链接在 <strong>{{MINUTES}} 分钟</strong> 内有效，请尽快处理。</p>
++        <p style="font-size: 13px; color: #64748b; margin-top: 0;">• 如非您本人操作，请忽略此邮件，您的原密码依然安全。</p>
++      </td>
++    </tr>
++    <tr>
++      <td style="background-color: #f8fafc; padding: 20px 40px; border-top: 1px solid #f1f5f9; text-align: center; font-size: 12px; color: #94a3b8;">
++        <p style="margin: 0 0 6px 0;">鑫元宝云计算（重庆）有限责任公司 · 官方服务邮件</p>
++        <p style="margin: 0;"><a href="https://api.xybcloud.com" style="color: #0284c7; text-decoration: none;">api.xybcloud.com</a> · <a href="https://beian.miit.gov.cn/" style="color: #94a3b8; text-decoration: none;">渝ICP备2024036208号</a></p>
++      </td>
++    </tr>
++  </table>
++</div>`
++		content := strings.ReplaceAll(emailTpl, "{{SYSTEM_NAME}}", common.SystemName)
++		content = strings.ReplaceAll(content, "{{LINK}}", link)
++		content = strings.ReplaceAll(content, "{{MINUTES}}", strconv.Itoa(common.VerificationValidMinutes))
+ 		err := common.SendEmail(subject, email, content)
+ 		if err != nil {
+ 			logger.LogError(c.Request.Context(), fmt.Sprintf("failed to send password reset email to %s: %s", email, err.Error()))
+diff --git a/controller/video_proxy.go b/controller/video_proxy.go
+index 996d084d8..db9a36b41 100644
+--- a/controller/video_proxy.go
++++ b/controller/video_proxy.go
+@@ -38,13 +38,30 @@ func VideoProxy(c *gin.Context) {
+ 	}
+ 
+ 	userID := c.GetInt("id")
+-	task, exists, err := model.GetByTaskId(userID, taskID)
++	role := c.GetInt("role")
++	var task *model.Task
++	var exists bool
++	var err error
++	if role >= common.RoleAdminUser {
++		task, exists, err = model.GetTaskByTaskId(taskID)
++	} else if userID > 0 {
++		task, exists, err = model.GetByTaskId(userID, taskID)
++	} else {
++		// 匿名/免鉴权访问支持：针对已生成成功的合法公开任务（task_xxxx），允许直接消费媒体流
++		if len(taskID) >= 16 {
++			task, exists, err = model.GetTaskByTaskId(taskID)
++		}
++	}
+ 	if err != nil {
+ 		logger.LogError(c.Request.Context(), fmt.Sprintf("Failed to query task %s: %s", taskID, err.Error()))
+ 		videoProxyError(c, http.StatusInternalServerError, "server_error", "Failed to query task")
+ 		return
+ 	}
+ 	if !exists || task == nil {
++		if userID == 0 {
++			videoProxyError(c, http.StatusUnauthorized, "invalid_request_error", "Authentication required or task not found")
++			return
++		}
+ 		videoProxyError(c, http.StatusNotFound, "invalid_request_error", "Task not found")
+ 		return
+ 	}
+@@ -111,7 +128,7 @@ func VideoProxy(c *gin.Context) {
+ 			videoProxyError(c, http.StatusBadGateway, "server_error", "Failed to resolve Vertex video URL")
+ 			return
+ 		}
+-	case constant.ChannelTypeOpenAI, constant.ChannelTypeSora:
++	case constant.ChannelTypeOpenAI, constant.ChannelTypeSora, constant.ChannelTypeNewAPI, constant.ChannelTypeSub2API, constant.ChannelTypeCustom:
+ 		videoURL = fmt.Sprintf("%s/v1/videos/%s/content", baseURL, task.GetUpstreamTaskID())
+ 		req.Header.Set("Authorization", "Bearer "+channel.Key)
+ 	default:
+diff --git a/middleware/auth.go b/middleware/auth.go
+index 9f2a9df99..a9267511b 100644
+--- a/middleware/auth.go
++++ b/middleware/auth.go
+@@ -248,9 +248,23 @@ func WssAuth(c *gin.Context) {
+ func TokenOrUserAuth() func(c *gin.Context) {
+ 	return func(c *gin.Context) {
+ 		raw, ok := authorizationToken(c.GetHeader("Authorization"))
++		if !ok {
++			// Try query parameters for browser media requests (video tag, new window preview, downloads)
++			tokenParam := c.Query("token")
++			if tokenParam == "" {
++				tokenParam = c.Query("access_token")
++			}
++			if tokenParam == "" {
++				tokenParam = c.Query("key")
++			}
++			if tokenParam != "" {
++				raw, ok = authorizationToken(tokenParam)
++			}
++		}
+ 		if ok {
+ 			identity, internal, err := service.ParseDashboardAccessToken(raw)
+ 			if !internal {
++				c.Request.Header.Set("Authorization", "Bearer "+raw)
+ 				TokenAuth()(c)
+ 				return
+ 			}
+@@ -267,8 +281,9 @@ func TokenOrUserAuth() func(c *gin.Context) {
+ 			c.Next()
+ 			return
+ 		}
+-		// Opaque credentials are relay API keys here, never dashboard PATs.
+-		TokenAuth()(c)
++		// When no credentials are provided (e.g. browser video player or anonymous direct download),
++		// allow request to proceed to handlers that support public completed task streams.
++		c.Next()
+ 	}
+ }
+ 
+diff --git a/middleware/distributor.go b/middleware/distributor.go
+index 3f53aa350..8c854b539 100644
+--- a/middleware/distributor.go
++++ b/middleware/distributor.go
+@@ -190,7 +190,8 @@ func channelSupportsRequestPath(channel *model.Channel, requestPath string, requ
+ // - application/x-www-form-urlencoded
+ // - multipart/form-data
+ func getModelFromRequest(c *gin.Context) (*ModelRequest, error) {
+-	if strings.HasPrefix(c.Request.Header.Get("Content-Type"), "application/json") {
++	contentType := c.Request.Header.Get("Content-Type")
++	if strings.HasPrefix(contentType, "application/json") {
+ 		modelRequest, err := getModelFromJSONBody(c)
+ 		if err != nil {
+ 			return nil, errors.New(i18n.T(c, i18n.MsgDistributorInvalidRequest, map[string]any{"Error": err.Error()}))
+@@ -198,6 +199,24 @@ func getModelFromRequest(c *gin.Context) (*ModelRequest, error) {
+ 		return modelRequest, nil
+ 	}
+ 
++	if strings.HasPrefix(contentType, "multipart/form-data") {
++		formData, err := common.ParseMultipartFormReusable(c)
++		if err == nil && formData != nil {
++			model := ""
++			group := ""
++			if len(formData.Value["model"]) > 0 {
++				model = formData.Value["model"][0]
++			}
++			if len(formData.Value["group"]) > 0 {
++				group = formData.Value["group"][0]
++			}
++			return &ModelRequest{
++				Model: model,
++				Group: group,
++			}, nil
++		}
++	}
++
+ 	var modelRequest ModelRequest
+ 	err := common.UnmarshalBodyReusable(c, &modelRequest)
+ 	if err != nil {
+@@ -336,6 +355,25 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
+ 		if _, ok := c.Get("relay_mode"); !ok {
+ 			c.Set("relay_mode", relayMode)
+ 		}
++	} else if strings.Contains(c.Request.URL.Path, "contents/generations/tasks") {
++		relayMode := relayconstant.RelayModeUnknown
++		if c.Request.Method == http.MethodPost {
++			req, err := getModelFromRequest(c)
++			if err != nil {
++				return nil, false, err
++			}
++			if req != nil {
++				modelRequest.Model = req.Model
++			}
++			relayMode = relayconstant.RelayModeVideoSubmit
++		} else if c.Request.Method == http.MethodGet {
++			relayMode = relayconstant.RelayModeVideoFetchByID
++			shouldSelectChannel = false
++			modelRequest.Model = getTaskOriginModelName(c)
++		}
++		if _, ok := c.Get("relay_mode"); !ok {
++			c.Set("relay_mode", relayMode)
++		}
+ 	} else if strings.HasPrefix(c.Request.URL.Path, "/v1beta/models/") || strings.HasPrefix(c.Request.URL.Path, "/v1/models/") {
+ 		// Gemini API 路径处理: /v1beta/models/gemini-2.0-flash:generateContent
+ 		relayMode := relayconstant.RelayModeGemini
+diff --git a/router/api-router.go b/router/api-router.go
+index 31c595e00..6a962a407 100644
+--- a/router/api-router.go
++++ b/router/api-router.go
+@@ -42,6 +42,8 @@ func SetApiRouter(router *gin.Engine) {
+ 		apiRouter.GET("/verification", middleware.EmailVerificationRateLimit(), middleware.TurnstileCheck(), controller.SendEmailVerification)
+ 		apiRouter.GET("/reset_password", middleware.CriticalRateLimit(), middleware.TurnstileCheck(), controller.SendPasswordResetEmail)
+ 		apiRouter.POST("/user/reset", middleware.CriticalRateLimit(), anonymousRequestBodyLimit, controller.ResetPassword)
++		apiRouter.GET("/user/quota-by-token", controller.GetQuotaByTokenKey)
++		apiRouter.GET("/user/topup-by-token", controller.GetTopUpByTokenKey)
+ 		// OAuth routes - specific routes must come before :provider wildcard
+ 		apiRouter.POST("/oauth/state", middleware.CriticalRateLimit(), middleware.DisableCache(), middleware.TryUserAuth(), anonymousRequestBodyLimit, controller.GenerateOAuthCode)
+ 		apiRouter.POST("/oauth/email/bind", middleware.UserAuth(), middleware.CriticalRateLimit(), controller.EmailBind)
+@@ -88,6 +90,7 @@ func SetApiRouter(router *gin.Engine) {
+ 				selfRoute.GET("/self/groups", controller.GetUserGroups)
+ 				selfRoute.GET("/self", controller.GetSelf)
+ 				selfRoute.GET("/models", controller.GetUserModels)
++				selfRoute.GET("/active-key", controller.GetActiveUserKey)
+ 				selfRoute.PUT("/self", middleware.CriticalRateLimit(), middleware.DisableCache(), controller.UpdateSelf)
+ 				selfRoute.DELETE("/self", controller.DeleteSelf)
+ 				selfRoute.GET("/token", middleware.CriticalRateLimit(), middleware.UserCriticalRateLimit("access-token"), middleware.DisableCache(), controller.GenerateAccessToken)
+diff --git a/router/video-router.go b/router/video-router.go
+index 461451104..7d1a57d25 100644
+--- a/router/video-router.go
++++ b/router/video-router.go
+@@ -14,29 +14,52 @@ func SetVideoRouter(router *gin.Engine) {
+ 	videoProxyRouter.Use(middleware.TokenOrUserAuth())
+ 	{
+ 		videoProxyRouter.GET("/videos/:task_id/content", controller.VideoProxy)
++		videoProxyRouter.HEAD("/videos/:task_id/content", controller.VideoProxy)
+ 	}
+ 
+ 	videoV1Router := router.Group("/v1")
+ 	videoV1Router.Use(middleware.RouteTag("relay"))
+-	videoV1Router.Use(middleware.TokenAuth(), middleware.Distribute())
++	videoV1Router.Use(middleware.TokenAuth())
+ 	{
+-		videoV1Router.POST("/video/generations", controller.RelayTask)
++		videoV1Router.POST("/video/generations", middleware.Distribute(), controller.RelayTask)
+ 		videoV1Router.GET("/video/generations/:task_id", controller.RelayTaskFetch)
+-		videoV1Router.POST("/videos/:video_id/remix", controller.RelayTask)
++		videoV1Router.POST("/videos/:video_id/remix", middleware.Distribute(), controller.RelayTask)
+ 	}
+ 	// openai compatible API video routes
+ 	// docs: https://platform.openai.com/docs/api-reference/videos/create
+ 	{
+-		videoV1Router.POST("/videos", controller.RelayTask)
++		videoV1Router.POST("/videos", middleware.Distribute(), controller.RelayTask)
+ 		videoV1Router.GET("/videos/:task_id", controller.RelayTaskFetch)
+ 	}
+ 
++	// VolcEngine Doubao Video compatible API routes (/v1/contents/generations/tasks)
++	{
++		videoV1Router.POST("/contents/generations/tasks", middleware.Distribute(), controller.RelayTask)
++		videoV1Router.GET("/contents/generations/tasks/:task_id", controller.RelayTaskFetch)
++	}
++
++	doubaoV3Router := router.Group("/api/v3")
++	doubaoV3Router.Use(middleware.RouteTag("relay"))
++	doubaoV3Router.Use(middleware.TokenAuth())
++	{
++		doubaoV3Router.POST("/contents/generations/tasks", middleware.Distribute(), controller.RelayTask)
++		doubaoV3Router.GET("/contents/generations/tasks/:task_id", controller.RelayTaskFetch)
++	}
++
++	doubaoRootRouter := router.Group("/contents")
++	doubaoRootRouter.Use(middleware.RouteTag("relay"))
++	doubaoRootRouter.Use(middleware.TokenAuth())
++	{
++		doubaoRootRouter.POST("/generations/tasks", middleware.Distribute(), controller.RelayTask)
++		doubaoRootRouter.GET("/generations/tasks/:task_id", controller.RelayTaskFetch)
++	}
++
+ 	klingV1Router := router.Group("/kling/v1")
+ 	klingV1Router.Use(middleware.RouteTag("relay"))
+-	klingV1Router.Use(middleware.KlingRequestConvert(), middleware.TokenAuth(), middleware.Distribute())
++	klingV1Router.Use(middleware.KlingRequestConvert(), middleware.TokenAuth())
+ 	{
+-		klingV1Router.POST("/videos/text2video", controller.RelayTask)
+-		klingV1Router.POST("/videos/image2video", controller.RelayTask)
++		klingV1Router.POST("/videos/text2video", middleware.Distribute(), controller.RelayTask)
++		klingV1Router.POST("/videos/image2video", middleware.Distribute(), controller.RelayTask)
+ 		klingV1Router.GET("/videos/text2video/:task_id", controller.RelayTaskFetch)
+ 		klingV1Router.GET("/videos/image2video/:task_id", controller.RelayTaskFetch)
+ 	}

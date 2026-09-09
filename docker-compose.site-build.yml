@@ -1,0 +1,10 @@
+# 与本机 docker-compose.yml 一起使用，强制本地构建，禁止 pull 官方 latest。
+# 用法（在仓库根目录）：
+#   docker compose -f docker-compose.yml -f docker-compose.site-build.yml up -d --build
+# 本文件不含 DSN / Redis / Session 等密钥。
+services:
+  new-api:
+    image: new-api:xyb-local
+    build:
+      context: .
+      dockerfile: Dockerfile

@@ -29,6 +29,8 @@ plans
 electron/node_modules
 electron/dist
 /data/
+/backups/
+*.dump
 .gomodcache/
 .gocache-temp
 .gopath

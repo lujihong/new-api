@@ -1,0 +1,189 @@
+diff --git a/common/constants.go b/common/constants.go
+index d6b4fb522..12a22a660 100644
+--- a/common/constants.go
++++ b/common/constants.go
+@@ -12,7 +12,7 @@ import (
+ 
+ var StartTime = time.Now().Unix() // unit: second
+ var Version = "v0.0.0"            // this hard coding will be replaced automatically when building, no need to manually change
+-var SystemName = "New API"
++var SystemName = "鑫元宝云计算模型服务平台"
+ var Footer = ""
+ var Logo = ""
+ var TopUpLink = ""
+diff --git a/common/endpoint_type.go b/common/endpoint_type.go
+index 126df3c8e..76863a27b 100644
+--- a/common/endpoint_type.go
++++ b/common/endpoint_type.go
+@@ -31,13 +31,25 @@ func GetEndpointTypesByChannelType(channelType int, modelName string) []constant
+ 	case constant.ChannelTypeSora:
+ 		endpointTypes = []constant.EndpointType{constant.EndpointTypeOpenAIVideo}
+ 	case constant.ChannelTypeSub2API, constant.ChannelTypeNewAPI:
+-		endpointTypes = []constant.EndpointType{
+-			constant.EndpointTypeOpenAI,
+-			constant.EndpointTypeOpenAIResponse,
+-			constant.EndpointTypeOpenAIResponseCompact,
+-			constant.EndpointTypeAnthropic,
+-			constant.EndpointTypeGemini,
+-			constant.EndpointTypeOpenAIAlphaSearch,
++		if IsVideoGenerationModel(modelName) {
++			endpointTypes = []constant.EndpointType{
++				constant.EndpointTypeOpenAIVideo,
++				constant.EndpointTypeOpenAI,
++			}
++		} else if IsImageGenerationModel(modelName) {
++			endpointTypes = []constant.EndpointType{
++				constant.EndpointTypeImageGeneration,
++				constant.EndpointTypeOpenAI,
++			}
++		} else {
++			endpointTypes = []constant.EndpointType{
++				constant.EndpointTypeOpenAI,
++				constant.EndpointTypeOpenAIResponse,
++				constant.EndpointTypeOpenAIResponseCompact,
++				constant.EndpointTypeAnthropic,
++				constant.EndpointTypeGemini,
++				constant.EndpointTypeOpenAIAlphaSearch,
++			}
+ 		}
+ 	case constant.ChannelTypeCodex:
+ 		endpointTypes = []constant.EndpointType{
+@@ -53,8 +65,28 @@ func GetEndpointTypesByChannelType(channelType int, modelName string) []constant
+ 		}
+ 	}
+ 	if IsImageGenerationModel(modelName) {
+-		// add to first
+-		endpointTypes = append([]constant.EndpointType{constant.EndpointTypeImageGeneration}, endpointTypes...)
++		hasImage := false
++		for _, et := range endpointTypes {
++			if et == constant.EndpointTypeImageGeneration {
++				hasImage = true
++				break
++			}
++		}
++		if !hasImage {
++			endpointTypes = append([]constant.EndpointType{constant.EndpointTypeImageGeneration}, endpointTypes...)
++		}
++	}
++	if IsVideoGenerationModel(modelName) {
++		hasVideo := false
++		for _, et := range endpointTypes {
++			if et == constant.EndpointTypeOpenAIVideo {
++				hasVideo = true
++				break
++			}
++		}
++		if !hasVideo {
++			endpointTypes = append([]constant.EndpointType{constant.EndpointTypeOpenAIVideo}, endpointTypes...)
++		}
+ 	}
+ 	return endpointTypes
+ }
+diff --git a/common/init.go b/common/init.go
+index 4d4c62b27..0b99e6435 100644
+--- a/common/init.go
++++ b/common/init.go
+@@ -190,8 +190,8 @@ func initConstantEnv() {
+ 	constant.AzureDefaultAPIVersion = GetEnvOrDefaultString("AZURE_DEFAULT_API_VERSION", "2025-04-01-preview")
+ 	constant.NotifyLimitCount = GetEnvOrDefault("NOTIFY_LIMIT_COUNT", 2)
+ 	constant.NotificationLimitDurationMinute = GetEnvOrDefault("NOTIFICATION_LIMIT_DURATION_MINUTE", 10)
+-	// GenerateDefaultToken 是否生成初始令牌，默认关闭。
+-	constant.GenerateDefaultToken = GetEnvOrDefaultBool("GENERATE_DEFAULT_TOKEN", false)
++	// GenerateDefaultToken 是否生成初始令牌，默认开启。
++	constant.GenerateDefaultToken = GetEnvOrDefaultBool("GENERATE_DEFAULT_TOKEN", true)
+ 	// 是否启用错误日志
+ 	constant.ErrorLogEnabled = GetEnvOrDefaultBool("ERROR_LOG_ENABLED", false)
+ 	// 任务轮询时查询的最大数量
+diff --git a/common/model.go b/common/model.go
+index 4ebc7b532..b3d0e0dad 100644
+--- a/common/model.go
++++ b/common/model.go
+@@ -12,10 +12,32 @@ var (
+ 	ImageGenerationModels = []string{
+ 		"dall-e-3",
+ 		"dall-e-2",
+-		"gpt-image-1",
++		"gpt-image-",
+ 		"prefix:imagen-",
+ 		"flux-",
+-		"flux.1-",
++		"flux.",
++		"midjourney",
++		"recraft",
++		"kolors",
++		"sd-",
++		"stable-diffusion",
++	}
++	VideoGenerationModels = []string{
++		"seedance",
++		"video",
++		"kling",
++		"sora",
++		"vidu",
++		"jimeng",
++		"happyhouse",
++		"omni-fast",
++		"omni-v2v",
++		"minimax-h3",
++		"cogvideox",
++		"hunyuan-video",
++		"pika",
++		"runway",
++		"luma",
+ 	}
+ 	OpenAITextModels = []string{
+ 		"gpt-",
+@@ -48,6 +70,19 @@ func IsImageGenerationModel(modelName string) bool {
+ 	return false
+ }
+ 
++func IsVideoGenerationModel(modelName string) bool {
++	modelName = strings.ToLower(modelName)
++	for _, m := range VideoGenerationModels {
++		if strings.Contains(modelName, m) {
++			return true
++		}
++		if strings.HasPrefix(m, "prefix:") && strings.HasPrefix(modelName, strings.TrimPrefix(m, "prefix:")) {
++			return true
++		}
++	}
++	return false
++}
++
+ func IsOpenAITextModel(modelName string) bool {
+ 	modelName = strings.ToLower(modelName)
+ 	for _, m := range OpenAITextModels {
+diff --git a/common/quota_math.go b/common/quota_math.go
+index 66d62093e..e500c9413 100644
+--- a/common/quota_math.go
++++ b/common/quota_math.go
+@@ -8,12 +8,12 @@ import (
+ )
+ 
+ // Quota conversions are centralized here so every billing path shares one
+-// saturation + logging policy. Quota columns (user/token/log) are 32-bit
+-// integers in the database, so an oversized product must clamp to the int32
+-// range instead of wrapping around and turning a charge into a credit.
++// saturation + logging policy. Using IEEE 754 max safe integer (2^53 - 1)
++// ensures safe precision across 64-bit Go runtimes, PostgreSQL bigint columns,
++// and frontend JavaScript Number types without integer overflow or capacity clamping.
+ const (
+-	MaxQuota = math.MaxInt32
+-	MinQuota = math.MinInt32
++	MaxQuota = (1 << 53) - 1
++	MinQuota = -MaxQuota
+ )
+ 
+ // QuotaClampKind identifies why a quota conversion had to be saturated.
+diff --git a/common/ssrf_protection.go b/common/ssrf_protection.go
+index f42e9435d..d738609d8 100644
+--- a/common/ssrf_protection.go
++++ b/common/ssrf_protection.go
+@@ -60,7 +60,6 @@ var privateIPv4Nets = []net.IPNet{
+ 	{IP: net.IPv4(192, 0, 0, 0), Mask: net.CIDRMask(24, 32)},       // 192.0.0.0/24 (IETF 协议分配)
+ 	{IP: net.IPv4(192, 0, 2, 0), Mask: net.CIDRMask(24, 32)},       // 192.0.2.0/24 (TEST-NET-1)
+ 	{IP: net.IPv4(192, 168, 0, 0), Mask: net.CIDRMask(16, 32)},     // 192.168.0.0/16 (私有)
+-	{IP: net.IPv4(198, 18, 0, 0), Mask: net.CIDRMask(15, 32)},      // 198.18.0.0/15 (基准测试)
+ 	{IP: net.IPv4(198, 51, 100, 0), Mask: net.CIDRMask(24, 32)},    // 198.51.100.0/24 (TEST-NET-2)
+ 	{IP: net.IPv4(203, 0, 113, 0), Mask: net.CIDRMask(24, 32)},     // 203.0.113.0/24 (TEST-NET-3)
+ 	{IP: net.IPv4(224, 0, 0, 0), Mask: net.CIDRMask(4, 32)},        // 224.0.0.0/4 (组播)

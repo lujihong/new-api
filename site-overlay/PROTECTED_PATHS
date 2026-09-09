@@ -1,0 +1,9 @@
+# 升级脚本永远不得覆盖、删除或从 upstream 合并进来的路径。
+# 这些文件承载生产密钥、DSN、已注册用户所在的数据卷。
+docker-compose.yml
+docker-compose.override.yml
+.env
+data/
+logs/
+backups/
+site-overlay/

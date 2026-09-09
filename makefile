@@ -8,11 +8,23 @@ DEV_POSTGRES_DB = new-api
 DEV_POSTGRES_USER = root
 DEV_SQLITE_PATH ?= one-api.db
 
-.PHONY: all build-web build-all-web start-api dev dev-api dev-api-rebuild dev-web reset-setup test
+.PHONY: all build-web build-all-web start-api dev dev-api dev-api-rebuild dev-web reset-setup test overlay-branding overlay-full write-version preflight-db
 
 all: build-all-web start-api
 
-build-web:
+write-version:
+	@./scripts/write-version.sh
+
+overlay-branding:
+	@./scripts/apply-site-overlay.sh --mode=branding
+
+overlay-full:
+	@./scripts/apply-site-overlay.sh --mode=full
+
+preflight-db:
+	@./scripts/preflight-db.sh
+
+build-web: write-version
 	@echo "Building web frontend..."
 	@cd $(WEB_DIR) && bun install --frozen-lockfile
 	@cd $(WEB_DIR) && DISABLE_ESLINT_PLUGIN='true' VITE_REACT_APP_VERSION=$$(cat ../VERSION) bun run build

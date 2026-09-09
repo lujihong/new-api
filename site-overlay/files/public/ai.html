@@ -1,0 +1,977 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>七夕快乐 · 致我最爱的明月 🌸✨</title>
+    <!-- 引入稳定高效的 Three.js 与 OrbitControls -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            -webkit-tap-highlight-color: transparent;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+
+        body, html {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #09030d;
+            font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+            color: #fff;
+        }
+
+        #webgl-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+            cursor: grab;
+        }
+        #webgl-container:active {
+            cursor: grabbing;
+        }
+
+        /* 浪漫粉紫星云光晕背景 */
+        .bg-nebula {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: 
+                radial-gradient(circle at 50% 35%, rgba(255, 105, 180, 0.22) 0%, rgba(219, 39, 119, 0.08) 45%, transparent 70%),
+                radial-gradient(circle at 80% 20%, rgba(254, 205, 211, 0.12) 0%, transparent 45%),
+                radial-gradient(circle at 20% 80%, rgba(168, 85, 247, 0.12) 0%, transparent 50%);
+            z-index: 0;
+            pointer-events: none;
+        }
+
+        /* 顶部状态栏 */
+        .top-bar {
+            position: absolute;
+            top: 18px;
+            left: 0;
+            width: 100%;
+            padding: 0 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            z-index: 20;
+            pointer-events: none;
+        }
+
+        .tag-badge {
+            pointer-events: auto;
+            background: rgba(255, 255, 255, 0.08);
+            backdrop-filter: blur(14px);
+            -webkit-backdrop-filter: blur(14px);
+            border: 1px solid rgba(255, 182, 193, 0.35);
+            padding: 7px 16px;
+            border-radius: 20px;
+            font-size: 12.5px;
+            color: #ffe4e6;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            letter-spacing: 0.6px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+        }
+
+        .music-btn {
+            pointer-events: auto;
+            background: rgba(244, 114, 182, 0.2);
+            backdrop-filter: blur(14px);
+            -webkit-backdrop-filter: blur(14px);
+            border: 1px solid rgba(255, 182, 193, 0.45);
+            padding: 7px 16px;
+            border-radius: 20px;
+            font-size: 12px;
+            color: #fff;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            box-shadow: 0 4px 15px rgba(219, 39, 119, 0.25);
+        }
+        .music-btn:hover {
+            background: rgba(244, 114, 182, 0.4);
+            transform: scale(1.05);
+        }
+
+        /* 3D 交互操作提示 */
+        .hint-overlay {
+            position: absolute;
+            top: 70px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            font-size: 12px;
+            color: rgba(255, 228, 230, 0.7);
+            letter-spacing: 1px;
+            pointer-events: none;
+            text-shadow: 0 0 10px rgba(0,0,0,0.9);
+            animation: fadeInOut 4s infinite alternate ease-in-out;
+            white-space: nowrap;
+        }
+
+        @keyframes fadeInOut {
+            0% { opacity: 0.35; transform: translate(-50%, 0); }
+            100% { opacity: 0.95; transform: translate(-50%, -3px); }
+        }
+
+        /* 底部高级粉黛磨砂玻璃情书卡片 */
+        .glass-card {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 90%;
+            max-width: 480px;
+            padding: 18px 22px 16px;
+            background: rgba(24, 8, 28, 0.76);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 182, 193, 0.3);
+            border-radius: 22px;
+            box-shadow: 0 15px 35px rgba(0, 0, 0, 0.65), inset 0 0 20px rgba(244, 114, 182, 0.12);
+            z-index: 20;
+            text-align: center;
+            transition: all 0.4s ease;
+        }
+
+        .title {
+            font-size: 19px;
+            font-weight: 700;
+            background: linear-gradient(135deg, #ffffff 0%, #fbcfe8 50%, #f43f5e 100%);
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 6px;
+            letter-spacing: 2px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+
+        .subtitle {
+            font-size: 13px;
+            color: #fce7f3;
+            line-height: 1.6;
+            margin-bottom: 12px;
+            font-weight: 300;
+            min-height: 42px;
+            letter-spacing: 0.5px;
+        }
+
+        /* 控制按钮 */
+        .control-row {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            margin-top: 2px;
+        }
+
+        .btn {
+            padding: 6px 14px;
+            font-size: 12px;
+            border-radius: 20px;
+            border: 1px solid rgba(255, 182, 193, 0.35);
+            background: linear-gradient(135deg, rgba(244, 114, 182, 0.25) 0%, rgba(219, 39, 119, 0.25) 100%);
+            color: #fff;
+            cursor: pointer;
+            outline: none;
+            transition: all 0.25s ease;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .btn:hover, .btn:active {
+            transform: translateY(-2px);
+            background: linear-gradient(135deg, rgba(244, 114, 182, 0.55) 0%, rgba(219, 39, 119, 0.55) 100%);
+            border-color: rgba(255, 255, 255, 0.8);
+            box-shadow: 0 6px 18px rgba(244, 114, 182, 0.4);
+        }
+
+        .rose-icon {
+            display: inline-block;
+            animation: rosePulse 2.0s infinite ease-in-out;
+        }
+
+        @keyframes rosePulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.22); }
+        }
+
+        /* 点击飘浮粉色爱心与星光粒子 */
+        .floating-heart {
+            position: absolute;
+            pointer-events: none;
+            z-index: 100;
+            animation: floatUp 1.8s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+            font-size: 22px;
+            filter: drop-shadow(0 0 8px rgba(255, 105, 180, 0.9));
+        }
+
+        @keyframes floatUp {
+            0% { opacity: 1; transform: translate(-50%, -50%) scale(0.6) rotate(0deg); }
+            50% { opacity: 0.9; transform: translate(-50%, -100px) scale(1.3) rotate(15deg); }
+            100% { opacity: 0; transform: translate(-50%, -200px) scale(1.6) rotate(-20deg); }
+        }
+
+        /* 专属情书弹窗模态框 */
+        .letter-modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(9, 3, 13, 0.85);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            z-index: 1000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            opacity: 0;
+            pointer-events: none;
+            transition: all 0.4s ease;
+            padding: 20px;
+        }
+
+        .letter-modal.active {
+            opacity: 1;
+            pointer-events: auto;
+        }
+
+        .letter-paper {
+            width: 100%;
+            max-width: 440px;
+            background: linear-gradient(135deg, rgba(255, 255, 255, 0.97) 0%, rgba(253, 242, 248, 0.95) 100%);
+            color: #1e293b;
+            padding: 28px 24px;
+            border-radius: 24px;
+            box-shadow: 0 25px 60px rgba(0, 0, 0, 0.6), 0 0 40px rgba(244, 114, 182, 0.35);
+            border: 1px solid rgba(255, 182, 193, 0.8);
+            transform: translateY(20px) scale(0.95);
+            transition: all 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+            position: relative;
+        }
+
+        .letter-modal.active .letter-paper {
+            transform: translateY(0) scale(1);
+        }
+
+        .letter-title {
+            font-size: 18px;
+            font-weight: 700;
+            color: #9d174d;
+            margin-bottom: 14px;
+            text-align: center;
+            letter-spacing: 1px;
+        }
+
+        .letter-body {
+            font-size: 13.5px;
+            line-height: 1.8;
+            color: #334155;
+            letter-spacing: 0.5px;
+            margin-bottom: 20px;
+            text-align: justify;
+        }
+
+        .letter-sign {
+            text-align: right;
+            font-size: 13px;
+            color: #be185d;
+            font-style: italic;
+        }
+
+        .close-letter-btn {
+            display: block;
+            width: 100%;
+            padding: 10px;
+            margin-top: 18px;
+            background: linear-gradient(135deg, #db2777 0%, #be185d 100%);
+            color: #fff;
+            border: none;
+            border-radius: 14px;
+            font-size: 13px;
+            cursor: pointer;
+            letter-spacing: 1px;
+            transition: all 0.2s ease;
+            box-shadow: 0 4px 15px rgba(219, 39, 119, 0.35);
+        }
+        .close-letter-btn:hover {
+            opacity: 0.92;
+            transform: scale(1.01);
+        }
+
+        #loader {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 50;
+            font-size: 13.5px;
+            color: #fbcfe8;
+            letter-spacing: 2px;
+            transition: opacity 0.5s ease;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="bg-nebula"></div>
+    <div id="loader">✨ 正在为您 3D 绽放粉黛玫瑰...</div>
+
+    <div class="top-bar">
+        <div class="tag-badge">
+            <span class="rose-icon">🌸</span> 七夕专属 · 法兰西粉玫瑰
+        </div>
+        <div class="music-btn" id="musicBtn">
+            <span class="rose-icon">🎵</span> 开启浪漫心乐
+        </div>
+    </div>
+
+    <div class="hint-overlay">✨ 触摸/鼠标可 360° 旋转观赏立体的粉色玫瑰 ✨</div>
+
+    <div id="webgl-container"></div>
+
+    <div class="glass-card">
+        <div class="title">
+            七夕快乐 · 致我的明月 <span class="rose-icon">🌸</span>
+        </div>
+        <div class="subtitle" id="typewriterText">“初见是惊鸿一瞥，重逢是始料未及，此生是你，唯爱不变。”</div>
+        <div class="control-row">
+            <button class="btn" id="letterBtn">💌 专属情书</button>
+            <button class="btn" id="petalRainBtn">🌸 漫天花雨</button>
+            <button class="btn" id="reBloomBtn">✨ 重新盛开</button>
+        </div>
+    </div>
+
+    <!-- 专属情书弹窗 -->
+    <div class="letter-modal" id="letterModal">
+        <div class="letter-paper">
+            <div class="letter-title">致最亲爱的明月 🌸✨</div>
+            <div class="letter-body">
+                粉色玫瑰的花语是：初恋般的悸动、特别的关怀，以及永远只属于你的温柔。<br><br>
+                今天是一年一度的七夕佳节，我用纯代码为你绽放了这朵永不凋零的 3D 法兰西粉玫瑰。<br><br>
+                每一片舒展的花瓣，都记录着我对你的爱意与思念；无论岁月如何流转，你在我心里永远如粉玫瑰般娇艳动人。<br><br>
+                七夕快乐，愿伴我的明月走过每一个浪漫良宵，岁岁年年，深情不负！
+            </div>
+            <div class="letter-sign">—— 永远爱你的卢吉宏 · 2026 七夕</div>
+            <button class="close-letter-btn" id="closeLetterBtn">收下这份心意 🌸</button>
+        </div>
+    </div>
+
+    <script>
+        window.addEventListener('load', () => {
+            const loader = document.getElementById('loader');
+            if (loader) {
+                loader.style.opacity = '0';
+                setTimeout(() => loader.remove(), 500);
+            }
+        });
+
+        // ── 1. 动态生成高保真浓郁法兰西粉玫瑰花瓣贴图 (Procedural Textures) ──
+        // 彻底杜绝惨白，采用深玫粉、娇艳粉、水嫩粉多层渐变与丝绒脉纹
+        function createPinkRoseTexture() {
+            const c = document.createElement('canvas');
+            c.width = 512; c.height = 512;
+            const ctx = c.getContext('2d');
+
+            // 饱满鲜明粉色径向渐变
+            const g = ctx.createRadialGradient(256, 420, 10, 256, 256, 260);
+            g.addColorStop(0, '#9d174d'); // 花心深玫粉娇嫩透光
+            g.addColorStop(0.2, '#be185d'); // 深桃粉
+            g.addColorStop(0.45, '#db2777'); // 娇艳法式粉
+            g.addColorStop(0.75, '#ec4899'); // 明丽水嫩粉
+            g.addColorStop(0.92, '#f472b6'); // 柔嫩粉
+            g.addColorStop(1, '#fbcfe8'); // 花瓣边缘微光粉（粉白透光）
+            ctx.fillStyle = g;
+            ctx.fillRect(0, 0, 512, 512);
+
+            // 花瓣丝绒微静脉纹理 (Veins)
+            ctx.strokeStyle = 'rgba(157, 23, 77, 0.35)';
+            ctx.lineWidth = 1.3;
+            for (let i = 0; i < 28; i++) {
+                ctx.beginPath();
+                ctx.moveTo(256, 500);
+                const tx = 60 + i * 15;
+                ctx.quadraticCurveTo(256 + (tx - 256) * 0.4, 250, tx, 40 + Math.random() * 40);
+                ctx.stroke();
+            }
+
+            // 边缘柔粉高光层
+            const edgeGlow = ctx.createRadialGradient(256, 256, 170, 256, 256, 256);
+            edgeGlow.addColorStop(0, 'rgba(244, 114, 182, 0)');
+            edgeGlow.addColorStop(1, 'rgba(251, 207, 232, 0.6)');
+            ctx.fillStyle = edgeGlow;
+            ctx.fillRect(0, 0, 512, 512);
+
+            const tex = new THREE.CanvasTexture(c);
+            tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+            return tex;
+        }
+
+        // 叶片天然纹理
+        function createLeafTexture() {
+            const c = document.createElement('canvas');
+            c.width = 512; c.height = 512;
+            const ctx = c.getContext('2d');
+
+            const g = ctx.createLinearGradient(0, 0, 0, 512);
+            g.addColorStop(0, '#2d6a4f');
+            g.addColorStop(1, '#1b4332');
+            ctx.fillStyle = g;
+            ctx.fillRect(0, 0, 512, 512);
+
+            // 主叶脉与侧叶脉
+            ctx.strokeStyle = 'rgba(116, 198, 157, 0.45)';
+            ctx.lineWidth = 4;
+            ctx.beginPath();
+            ctx.moveTo(256, 512);
+            ctx.lineTo(256, 20);
+            ctx.stroke();
+
+            ctx.lineWidth = 2;
+            for (let i = 0; i < 12; i++) {
+                const y = 80 + i * 35;
+                ctx.beginPath();
+                ctx.moveTo(256, y);
+                ctx.lineTo(80, y - 40);
+                ctx.stroke();
+
+                ctx.beginPath();
+                ctx.moveTo(256, y);
+                ctx.lineTo(432, y - 40);
+                ctx.stroke();
+            }
+
+            return new THREE.CanvasTexture(c);
+        }
+
+        const pinkRoseTex = createPinkRoseTexture();
+        const leafTex = createLeafTexture();
+
+        // ── 2. Three.js 物理场景搭建与多重柔光布光 ──
+        const container = document.getElementById('webgl-container');
+        const scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x09030d, 0.012);
+
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 8, 45);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: "high-performance" });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.3;
+        container.appendChild(renderer.domElement);
+
+        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.05;
+        controls.maxDistance = 80;
+        controls.minDistance = 15;
+        controls.maxPolarAngle = Math.PI / 2 + 0.3;
+        controls.target.set(0, 4, 0);
+
+        // 影棚柔光系统 (主打浪漫粉色基调，避免白光过曝洗白)
+        const ambientLight = new THREE.AmbientLight(0xffd1dc, 1.4);
+        scene.add(ambientLight);
+
+        // 主粉红柔光聚光灯
+        const keySpot = new THREE.SpotLight(0xff69b4, 3.8);
+        keySpot.position.set(20, 38, 32);
+        keySpot.angle = Math.PI / 3.5;
+        keySpot.penumbra = 0.85;
+        scene.add(keySpot);
+
+        // 侧方暖粉补光 (给粉色花瓣带来水润通透感)
+        const warmFill = new THREE.PointLight(0xf472b6, 2.2, 60);
+        warmFill.position.set(-25, 18, 25);
+        scene.add(warmFill);
+
+        // 顶部柔粉轮廓光
+        const topRim = new THREE.SpotLight(0xfbcfe8, 2.8);
+        topRim.position.set(0, 42, 6);
+        topRim.angle = Math.PI / 3;
+        topRim.penumbra = 0.8;
+        scene.add(topRim);
+
+        // 底部深玫粉环境反光
+        const bottomBounce = new THREE.PointLight(0xbe185d, 1.2, 45);
+        bottomBounce.position.set(0, -18, 12);
+        scene.add(bottomBounce);
+
+        // ── 3. 物理级娇艳粉玫瑰材质 ──
+        const pinkPetalMat = new THREE.MeshStandardMaterial({
+            map: pinkRoseTex,
+            color: 0xffa4c7, // 赋予浓郁水嫩粉底色
+            emissive: 0x3d0b20, // 柔和深粉自发光，模拟花瓣内部次表面透光感
+            roughness: 0.28,
+            metalness: 0.04,
+            side: THREE.DoubleSide
+        });
+
+        const stemMat = new THREE.MeshStandardMaterial({
+            color: 0x2d6a4f,
+            roughness: 0.55,
+            metalness: 0.1,
+            side: THREE.DoubleSide
+        });
+
+        const leafMat = new THREE.MeshStandardMaterial({
+            map: leafTex,
+            roughness: 0.38,
+            metalness: 0.1,
+            side: THREE.DoubleSide
+        });
+
+        // ── 4. 高精度有机曲面花瓣几何算法 (Organic Rose Petal Mesh) ──
+        function createRosePetalGeom(width, length, curv, curl, waveAmp = 0.25) {
+            const geom = new THREE.PlaneGeometry(width, length, 22, 22);
+            const pos = geom.attributes.position;
+
+            for (let i = 0; i < pos.count; i++) {
+                let x = pos.getX(i);
+                let y = pos.getY(i);
+                let ny = (y + length / 2) / length; // 0 ~ 1
+                let nx = x / (width / 2); // -1 ~ 1
+
+                // 核心碗状凹陷
+                let z = Math.sin(ny * Math.PI) * curv * (1 - Math.abs(nx) * 0.3);
+                // 顶端向外翻卷
+                z += Math.pow(ny, 2.2) * curl;
+                // 波浪起伏边缘
+                z += Math.sin(nx * Math.PI * 2 + ny * Math.PI) * waveAmp * ny;
+                // 侧边缘微下卷
+                z -= Math.pow(nx, 2) * (curv * 0.32);
+
+                // 花瓣底部收窄
+                x = x * (0.22 + 0.78 * Math.sin(ny * Math.PI * 0.85));
+
+                pos.setXYZ(i, x, y, z);
+            }
+            geom.computeVertexNormals();
+            return geom;
+        }
+
+        // ── 5. 构建殿堂级 3D 盛开粉玫瑰 ──
+        const roseGroup = new THREE.Group();
+        scene.add(roseGroup);
+        const petals = [];
+
+        function buildPinkRose() {
+            while (roseGroup.children.length > 0) {
+                roseGroup.remove(roseGroup.children[0]);
+            }
+            petals.length = 0;
+
+            const totalLayers = 8;
+            const countPerLayer = [3, 4, 5, 6, 7, 8, 9, 10];
+            const goldenRatioAngle = 2.39996; // 黄金螺旋角 (137.5 度)
+            let petalIdx = 0;
+
+            for (let layer = 0; layer < totalLayers; layer++) {
+                const count = countPerLayer[layer];
+                const layerProgress = layer / totalLayers;
+
+                // 尺寸随层数向外扩展
+                const width = 3.6 + layer * 1.5;
+                const length = 5.2 + layer * 1.7;
+                // 内层紧抱包裹，外层自然外翻舒展
+                const curv = 3.5 - layer * 0.28;
+                const curl = (layer - 2.2) * 1.8;
+                const baseRadius = 0.6 + Math.pow(layer, 1.3) * 1.1;
+
+                for (let i = 0; i < count; i++) {
+                    const geom = createRosePetalGeom(width, length, curv, curl, 0.25);
+                    const mesh = new THREE.Mesh(geom, pinkPetalMat);
+
+                    const angle = petalIdx * goldenRatioAngle + (i / count) * 0.5;
+                    const radius = baseRadius * (0.92 + Math.random() * 0.16);
+
+                    mesh.position.x = Math.cos(angle) * radius;
+                    mesh.position.z = Math.sin(angle) * radius;
+                    mesh.position.y = 8 + layer * 0.62 + Math.sin(i) * 0.3;
+
+                    mesh.rotation.y = -angle + Math.PI / 2;
+                    // 内层近乎竖直，外层大幅盛开舒展
+                    const openAngle = 0.18 + Math.pow(layerProgress, 1.35) * 1.15;
+                    mesh.rotation.x = openAngle;
+                    mesh.rotation.z = (Math.random() - 0.5) * 0.2;
+
+                    mesh.userData = {
+                        targetRotX: mesh.rotation.x,
+                        delay: layer * 0.08 + i * 0.02
+                    };
+                    mesh.scale.set(0.01, 0.01, 0.01);
+
+                    roseGroup.add(mesh);
+                    petals.push(mesh);
+                    petalIdx++;
+                }
+            }
+
+            // 花萼 (5 片青翠花萼)
+            for (let s = 0; s < 5; s++) {
+                const sepalGeom = createRosePetalGeom(2.2, 8.0, 1.2, 3.5, 0.1);
+                const sepal = new THREE.Mesh(sepalGeom, leafMat);
+                const sAngle = (s / 5) * Math.PI * 2;
+                sepal.position.set(Math.cos(sAngle) * 2.4, 7.6, Math.sin(sAngle) * 2.4);
+                sepal.rotation.y = -sAngle + Math.PI / 2;
+                sepal.rotation.x = 1.45;
+                roseGroup.add(sepal);
+            }
+
+            // 自然弯曲的花茎
+            const stemCurve = new THREE.CatmullRomCurve3([
+                new THREE.Vector3(0, 8, 0),
+                new THREE.Vector3(0.6, 2, 0.4),
+                new THREE.Vector3(-0.8, -6, -0.3),
+                new THREE.Vector3(0.3, -15, 0.5),
+                new THREE.Vector3(0, -24, 0)
+            ]);
+            const stemMesh = new THREE.Mesh(new THREE.TubeGeometry(stemCurve, 64, 0.8, 16, false), stemMat);
+            roseGroup.add(stemMesh);
+
+            // 两枚舒展的玫瑰叶片
+            const leafGeom1 = createRosePetalGeom(4.2, 7.5, 1.0, -1.2, 0.15);
+            const leaf1 = new THREE.Mesh(leafGeom1, leafMat);
+            leaf1.position.set(2.8, 0, 1.4);
+            leaf1.rotation.set(0.4, 0.8, -0.6);
+            roseGroup.add(leaf1);
+
+            const leafGeom2 = createRosePetalGeom(3.8, 7.0, 1.0, -1.2, 0.15);
+            const leaf2 = new THREE.Mesh(leafGeom2, leafMat);
+            leaf2.position.set(-3.0, -7, -0.9);
+            leaf2.rotation.set(-0.3, -1.2, 0.7);
+            roseGroup.add(leaf2);
+
+            roseGroup.position.set(0, -2.5, 0);
+        }
+
+        buildPinkRose();
+
+        // ── 6. 璀璨星空、环绕金粉与飘落粉色花瓣粒子 ──
+        // 6.1 环绕粉金星光
+        const starCount = 1100;
+        const starGeom = new THREE.BufferGeometry();
+        const starPos = new Float32Array(starCount * 3);
+        const starColors = new Float32Array(starCount * 3);
+        const starSpeeds = new Float32Array(starCount);
+
+        for (let i = 0; i < starCount; i++) {
+            const theta = Math.random() * Math.PI * 2;
+            const radius = 4 + Math.random() * 36;
+            const y = (Math.random() - 0.5) * 55;
+
+            starPos[i * 3] = Math.cos(theta) * radius;
+            starPos[i * 3 + 1] = y;
+            starPos[i * 3 + 2] = Math.sin(theta) * radius;
+
+            // 金光与粉色微光
+            const isGold = Math.random() > 0.45;
+            starColors[i * 3] = 1.0;
+            starColors[i * 3 + 1] = isGold ? 0.85 : 0.65;
+            starColors[i * 3 + 2] = isGold ? 0.35 : 0.85;
+
+            starSpeeds[i] = 0.01 + Math.random() * 0.03;
+        }
+
+        starGeom.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
+        starGeom.setAttribute('color', new THREE.BufferAttribute(starColors, 3));
+
+        function createGlowPointTexture() {
+            const c = document.createElement('canvas');
+            c.width = 64; c.height = 64;
+            const ctx = c.getContext('2d');
+            const g = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+            g.addColorStop(0, 'rgba(255, 255, 255, 1)');
+            g.addColorStop(0.3, 'rgba(255, 182, 193, 0.85)');
+            g.addColorStop(0.7, 'rgba(244, 114, 182, 0.25)');
+            g.addColorStop(1, 'rgba(0, 0, 0, 0)');
+            ctx.fillStyle = g;
+            ctx.fillRect(0, 0, 64, 64);
+            return new THREE.CanvasTexture(c);
+        }
+
+        const starPoints = new THREE.Points(starGeom, new THREE.PointsMaterial({
+            size: 0.9,
+            vertexColors: true,
+            transparent: true,
+            opacity: 0.85,
+            map: createGlowPointTexture(),
+            blending: THREE.AdditiveBlending,
+            depthWrite: false
+        }));
+        scene.add(starPoints);
+
+        // 6.2 飘落的 3D 粉色花瓣
+        const fallingPetalsCount = 38;
+        const fallingGroup = new THREE.Group();
+        scene.add(fallingGroup);
+
+        const fallingPetalGeom = createRosePetalGeom(2.2, 3.4, 0.9, 0.45, 0.2);
+        for (let i = 0; i < fallingPetalsCount; i++) {
+            const mesh = new THREE.Mesh(fallingPetalGeom, pinkPetalMat);
+            mesh.position.set(
+                (Math.random() - 0.5) * 60,
+                20 + Math.random() * 35,
+                (Math.random() - 0.5) * 60
+            );
+            mesh.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
+            mesh.userData = {
+                speedY: 0.07 + Math.random() * 0.08,
+                rotX: (Math.random() - 0.5) * 0.03,
+                rotY: (Math.random() - 0.5) * 0.03,
+                drift: (Math.random() - 0.5) * 0.02
+            };
+            fallingGroup.add(mesh);
+        }
+
+        // ── 7. 绽放与主动画渲染 ──
+        let bloomTime = 0;
+        function triggerRebloom() {
+            bloomTime = 0;
+            petals.forEach(p => {
+                p.scale.set(0.01, 0.01, 0.01);
+            });
+        }
+
+        const clock = new THREE.Clock();
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const delta = clock.getDelta();
+            const time = clock.getElapsedTime();
+
+            // 玫瑰花自身柔美自转与呼吸摇曳
+            roseGroup.rotation.y = time * 0.2;
+            roseGroup.position.y = -2.5 + Math.sin(time * 1.1) * 0.5;
+
+            // 绽放动画计算
+            if (bloomTime < 4.0) {
+                bloomTime += delta;
+                petals.forEach(p => {
+                    if (bloomTime > p.userData.delay) {
+                        const progress = Math.min(1, (bloomTime - p.userData.delay) * 1.25);
+                        // 弹性缓动曲线 (EaseOutBack)
+                        const s = 1 + 1.2 * Math.pow(progress - 1, 3) + 0.4 * Math.pow(progress - 1, 2);
+                        p.scale.set(s, s, s);
+                    }
+                });
+            }
+
+            // 星光粒子螺旋盘旋上升
+            const pAttr = starGeom.attributes.position;
+            for (let i = 0; i < starCount; i++) {
+                let y = pAttr.getY(i) + starSpeeds[i] * 9 * delta;
+                let x = pAttr.getX(i);
+                let z = pAttr.getZ(i);
+
+                const angle = 0.22 * delta;
+                const nx = x * Math.cos(angle) - z * Math.sin(angle);
+                const nz = x * Math.sin(angle) + z * Math.cos(angle);
+
+                if (y > 28) y = -28;
+                pAttr.setXYZ(i, nx, y, nz);
+            }
+            pAttr.needsUpdate = true;
+
+            // 飘落花瓣动态更新
+            fallingGroup.children.forEach(mesh => {
+                mesh.position.y -= mesh.userData.speedY;
+                mesh.position.x += Math.sin(time + mesh.position.y * 0.1) * 0.05 + mesh.userData.drift;
+                mesh.rotation.x += mesh.userData.rotX;
+                mesh.rotation.y += mesh.userData.rotY;
+
+                if (mesh.position.y < -25) {
+                    mesh.position.y = 35 + Math.random() * 10;
+                    mesh.position.x = (Math.random() - 0.5) * 60;
+                    mesh.position.z = (Math.random() - 0.5) * 60;
+                }
+            });
+
+            // 顶部光影跟随流动
+            topRim.position.x = Math.sin(time * 0.8) * 15;
+            topRim.position.z = Math.cos(time * 0.8) * 15;
+
+            controls.update();
+            renderer.render(scene, camera);
+        }
+
+        animate();
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // ── 8. 屏幕点击交互：迸发粉色爱心与星芒 ──
+        window.addEventListener('pointerdown', (e) => {
+            if (e.target.closest('.glass-card') || e.target.closest('.top-bar') || e.target.closest('.letter-modal')) return;
+
+            const heart = document.createElement('div');
+            heart.className = 'floating-heart';
+            const icons = ['🌸', '💖', '✨', '💕', '🌹', '🕊️'];
+            heart.innerText = icons[Math.floor(Math.random() * icons.length)];
+            heart.style.left = `${e.clientX}px`;
+            heart.style.top = `${e.clientY}px`;
+            document.body.appendChild(heart);
+
+            setTimeout(() => { heart.remove(); }, 1800);
+        });
+
+        // ── 9. 打字机字幕循环 ──
+        const poetryLines = [
+            "“初见是惊鸿一瞥，重逢是始料未及，此生是你，唯爱不变。”",
+            "“赠我的明月 —— 粉黛娇艳，不及你眉眼温柔。”",
+            "“海底月是天上月，眼前人是心上人。”",
+            "“愿这朵永不凋零的粉色玫瑰，守护你岁岁年年的欢愉。”"
+        ];
+
+        let lineIdx = 0, charIdx = 0, isDeleting = false;
+        const typewriterEl = document.getElementById('typewriterText');
+
+        function typeLoop() {
+            const currentLine = poetryLines[lineIdx];
+            if (isDeleting) {
+                typewriterEl.textContent = currentLine.substring(0, charIdx - 1);
+                charIdx--;
+            } else {
+                typewriterEl.textContent = currentLine.substring(0, charIdx + 1);
+                charIdx++;
+            }
+
+            let typeSpeed = isDeleting ? 30 : 75;
+
+            if (!isDeleting && charIdx === currentLine.length) {
+                typeSpeed = 2800;
+                isDeleting = true;
+            } else if (isDeleting && charIdx === 0) {
+                isDeleting = false;
+                lineIdx = (lineIdx + 1) % poetryLines.length;
+                typeSpeed = 400;
+            }
+
+            setTimeout(typeLoop, typeSpeed);
+        }
+        setTimeout(typeLoop, 800);
+
+        // ── 10. 按钮功能 ──
+        const letterModal = document.getElementById('letterModal');
+        document.getElementById('letterBtn').addEventListener('click', () => {
+            letterModal.classList.add('active');
+        });
+        document.getElementById('closeLetterBtn').addEventListener('click', () => {
+            letterModal.classList.remove('active');
+        });
+        letterModal.addEventListener('click', (e) => {
+            if (e.target === letterModal) letterModal.classList.remove('active');
+        });
+
+        document.getElementById('petalRainBtn').addEventListener('click', () => {
+            for (let i = 0; i < 35; i++) {
+                const mesh = new THREE.Mesh(fallingPetalGeom, pinkPetalMat);
+                mesh.position.set(
+                    (Math.random() - 0.5) * 50,
+                    20 + Math.random() * 30,
+                    (Math.random() - 0.5) * 50
+                );
+                mesh.userData = {
+                    speedY: 0.1 + Math.random() * 0.1,
+                    rotX: (Math.random() - 0.5) * 0.05,
+                    rotY: (Math.random() - 0.5) * 0.05,
+                    drift: (Math.random() - 0.5) * 0.04
+                };
+                fallingGroup.add(mesh);
+            }
+        });
+
+        document.getElementById('reBloomBtn').addEventListener('click', () => {
+            triggerRebloom();
+        });
+
+        // ── 11. Web Audio API 浪漫钢琴和弦音乐 ──
+        let audioCtx = null;
+        let isPlayingMusic = false;
+
+        function playRomanticChords() {
+            if (!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            if (audioCtx.state === 'suspended') {
+                audioCtx.resume();
+            }
+
+            const chords = [
+                [261.63, 329.63, 392.00, 523.25], // C Major
+                [220.00, 261.63, 329.63, 440.00], // A Minor
+                [174.61, 220.00, 261.63, 349.23], // F Major
+                [196.00, 246.94, 293.66, 392.00]  // G Major
+            ];
+
+            let chordIdx = 0;
+
+            function playNextChord() {
+                if (!isPlayingMusic) return;
+
+                const currentChord = chords[chordIdx];
+                currentChord.forEach((freq, i) => {
+                    const osc = audioCtx.createOscillator();
+                    const gain = audioCtx.createGain();
+
+                    osc.type = 'sine';
+                    osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+
+                    gain.gain.setValueAtTime(0, audioCtx.currentTime);
+                    gain.gain.linearRampToValueAtTime(0.06 / (i + 1), audioCtx.currentTime + 0.7);
+                    gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 3.2);
+
+                    osc.connect(gain);
+                    gain.connect(audioCtx.destination);
+
+                    osc.start(audioCtx.currentTime + i * 0.12);
+                    osc.stop(audioCtx.currentTime + 3.4);
+                });
+
+                chordIdx = (chordIdx + 1) % chords.length;
+                setTimeout(playNextChord, 2800);
+            }
+
+            playNextChord();
+        }
+
+        const musicBtn = document.getElementById('musicBtn');
+        musicBtn.addEventListener('click', () => {
+            isPlayingMusic = !isPlayingMusic;
+            if (isPlayingMusic) {
+                musicBtn.innerHTML = '<span class="rose-icon">🎶</span> 正在播放浪漫心乐';
+                musicBtn.style.background = 'rgba(244, 114, 182, 0.45)';
+                playRomanticChords();
+            } else {
+                musicBtn.innerHTML = '<span class="rose-icon">🎵</span> 开启浪漫心乐';
+                musicBtn.style.background = 'rgba(244, 114, 182, 0.2)';
+            }
+        });
+    </script>
+</body>
+</html>
