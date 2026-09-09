@@ -17,11 +17,11 @@ services:
       - TZ=Asia/Shanghai
       - ERROR_LOG_ENABLED=true
       - BATCH_UPDATE_ENABLED=true
-      - NODE_NAME=token-profitly-cn
+      - NODE_NAME=api-xybcloud-com
       - SESSION_SECRET=0f57ec754f3c10e6bc2fdafc75c284f47d04b2e582118497c39671baf880b491
       - SESSION_COOKIE_SECURE=true
-      - SESSION_COOKIE_TRUSTED_URL=https://token.profitly.cn
-      - FRONTEND_BASE_URL=https://token.profitly.cn
+      - SESSION_COOKIE_TRUSTED_URL=https://api.xybcloud.com
+      - FRONTEND_BASE_URL=https://api.xybcloud.com
       - TRUSTED_PROXIES=127.0.0.1,172.18.0.0/16
     networks:
       - mynet
