@@ -743,10 +743,76 @@ func settleTaskBillingOnCompletePrepared(ctx context.Context, adaptor TaskPollin
 	if tokens == 0 && taskResult.CompletionTokens > 0 {
 		tokens = taskResult.CompletionTokens
 	}
+	settled := false
 	if tokens > 0 {
-		return RecalculateTaskQuotaByTokens(ctx, task, tokens)
+		settled = RecalculateTaskQuotaByTokens(ctx, task, tokens)
 	}
-	return false
+	recordTaskProcurementAttempt(ctx, task, taskResult)
+	return settled
+}
+
+func recordTaskProcurementAttempt(ctx context.Context, task *model.Task, taskResult *relaycommon.TaskInfo) {
+	if task == nil || task.ChannelId <= 0 {
+		return
+	}
+	upstreamModel := task.Properties.UpstreamModelName
+	if upstreamModel == "" {
+		upstreamModel = task.Properties.OriginModelName
+	}
+	attemptID := fmt.Sprintf("task_%s", task.TaskID)
+	version, err := model.FindEffectivePurchasePriceVersion(task.ChannelId, upstreamModel, task.CreatedAt)
+	if err != nil {
+		logger.LogWarn(ctx, fmt.Sprintf("查询渠道 %d 采购价版本失败: %v", task.ChannelId, err))
+	}
+
+	costStatus := model.CostStatusUnknown
+	var costAmount *float64
+	var costCurrency string
+	var versionID *int64
+
+	if version != nil {
+		versionID = &version.ID
+		costCurrency = version.Currency
+		if version.BillingMode == "per_token" && taskResult != nil && taskResult.TotalTokens > 0 {
+			tokens := float64(taskResult.TotalTokens)
+			if version.Unit == "1k_tokens" {
+				c := (tokens / 1000.0) * version.UnitPrice
+				costAmount = &c
+				costStatus = model.CostStatusKnown
+			} else if version.Unit == "1m_tokens" {
+				c := (tokens / 1000000.0) * version.UnitPrice
+				costAmount = &c
+				costStatus = model.CostStatusKnown
+			}
+		} else if version.BillingMode == "per_request" {
+			costAmount = &version.UnitPrice
+			costStatus = model.CostStatusKnown
+		}
+	}
+
+	var usageJSON string
+	if taskResult != nil && len(taskResult.UsageFacts) > 0 {
+		if b, err := common.Marshal(taskResult.UsageFacts); err == nil {
+			usageJSON = string(b)
+		}
+	}
+
+	attempt := &model.UpstreamAttempt{
+		AttemptID:              attemptID,
+		TaskID:                 task.TaskID,
+		ChannelID:              task.ChannelId,
+		OriginModel:            task.Properties.OriginModelName,
+		UpstreamModel:          upstreamModel,
+		PurchasePriceVersionID: versionID,
+		CostStatus:             costStatus,
+		CostAmount:             costAmount,
+		CostCurrency:           costCurrency,
+		UpstreamTaskID:         task.PrivateData.UpstreamTaskID,
+		UsageJSON:              usageJSON,
+	}
+	if err := model.RecordUpstreamAttempt(attempt); err != nil {
+		logger.LogWarn(ctx, fmt.Sprintf("记录上游调用尝试成本失败 task %s: %v", task.TaskID, err))
+	}
 }
 
 func classifyPollHTTP(statusCode int) string {
