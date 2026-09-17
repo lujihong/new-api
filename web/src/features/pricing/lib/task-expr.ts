@@ -226,7 +226,6 @@ export function tryParseTaskMatrixConfig(
     }
   }
 
-  if (tiers.length !== combinations.length) return null
   const fallbackTier = tiers.at(-1)
   if (!fallbackTier || fallbackTier.conditions.length !== 0) return null
 

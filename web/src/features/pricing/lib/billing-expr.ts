@@ -304,52 +304,6 @@ function mapTokenTier(
   }
 }
 
-function parseBranchTiers(body: string): ParsedTier[] | null {
-  const match = body.match(
-    /^\s*(.+?)\s*\?\s*tier\("([^"]+)",\s*([^)]+)\)\s*:\s*tier\("([^"]+)",\s*([^)]+)\)\s*$/s
-  )
-  if (!match) return null
-  const [, cond, label1, body1, label2, body2] = match
-  if (!cond.includes('hour') && !cond.includes('weekday')) {
-    return null
-  }
-  const prices1 = parseTierBody(body1)
-  const prices2 = parseTierBody(body2)
-  if (!prices1 || !prices2) return null
-
-  let summary1 = '特定时段'
-  let summary2 = '常规时段'
-  if (label1 === 'peak' || (cond.includes('9') && cond.includes('14'))) {
-    summary1 = '高峰时段：工作日 09:00~12:00, 14:00~18:00 (Asia/Shanghai)'
-    summary2 = '空闲时段：其余时间（全场半价优惠）'
-  }
-  return [
-    { ...prices1, label: label1, conditions: [], conditionSummary: summary1 },
-    { ...prices2, label: label2, conditions: [], conditionSummary: summary2 },
-  ]
-}
-
-function parseVideoParamTiers(body: string): ParsedTier[] | null {
-  if (!body.includes('resolution') || !body.includes('vs')) return null
-  const parts = body.split(/\s*:\s*(?=has|tier)/)
-  const tiers: ParsedTier[] = []
-  for (const part of parts) {
-    const tierMatch = part.match(/tier\("([^"]+)",\s*(.+)\)\s*$/s)
-    if (!tierMatch) continue
-    const label = tierMatch[1]
-    const inner = tierMatch[2]
-    const rateMatch = inner.match(/\*\s*([\d.]+)/)
-    const rate = rateMatch ? Number(rateMatch[1]) : 0
-    tiers.push({
-      label,
-      outputPrice: rate,
-      conditions: [],
-      conditionSummary: `${label.toUpperCase()} 分辨率 (${rate} /秒)`,
-    })
-  }
-  return tiers.length > 0 ? tiers : null
-}
-
 export function parseTiersFromExpr(exprStr: string): ParsedTier[] {
   if (!exprStr) return []
   const compiled = compileBillingExpression(exprStr)
@@ -369,6 +323,264 @@ export function getCurrentTimePricingTiers(
   )
 }
 
+function stripExprVersion(exprStr: string): { version: number; body: string } {
+  if (!exprStr) return { version: 1, body: '' }
+  const m = exprStr.match(/^v(\d+):([\s\S]*)$/)
+  if (m) return { version: Number(m[1]), body: m[2] }
+  return { version: 1, body: exprStr }
+}
+
+function findTaskTopLevelCharacter(
+  expression: string,
+  target: string,
+  start = 0
+): number {
+  let depth = 0
+  let quoted = false
+  let escaped = false
+  for (let index = start; index < expression.length; index += 1) {
+    const character = expression[index]
+    if (quoted) {
+      if (escaped) {
+        escaped = false
+      } else if (character === '\\') {
+        escaped = true
+      } else if (character === '"') {
+        quoted = false
+      }
+      continue
+    }
+    if (character === '"') {
+      quoted = true
+      continue
+    }
+    if (character === '(') {
+      depth += 1
+      continue
+    }
+    if (character === ')') {
+      depth -= 1
+      if (depth < 0) return -1
+      continue
+    }
+    if (depth === 0 && character === target) return index
+  }
+  return -1
+}
+
+function findTaskTernaryColon(
+  expression: string,
+  questionIndex: number
+): number {
+  let depth = 0
+  let ternaryDepth = 0
+  let quoted = false
+  let escaped = false
+  for (let index = questionIndex + 1; index < expression.length; index += 1) {
+    const character = expression[index]
+    if (quoted) {
+      if (escaped) {
+        escaped = false
+      } else if (character === '\\') {
+        escaped = true
+      } else if (character === '"') {
+        quoted = false
+      }
+      continue
+    }
+    if (character === '"') {
+      quoted = true
+      continue
+    }
+    if (character === '(') {
+      depth += 1
+      continue
+    }
+    if (character === ')') {
+      depth -= 1
+      if (depth < 0) return -1
+      continue
+    }
+    if (depth !== 0) continue
+    if (character === '?') {
+      ternaryDepth += 1
+      continue
+    }
+    if (character !== ':') continue
+    if (ternaryDepth === 0) return index
+    ternaryDepth -= 1
+  }
+  return -1
+}
+
+function splitTaskTopLevel(expression: string, operator: '&&' | '+'): string[] {
+  const parts: string[] = []
+  let start = 0
+  let depth = 0
+  let quoted = false
+  let escaped = false
+  for (let index = 0; index < expression.length; index += 1) {
+    const character = expression[index]
+    if (quoted) {
+      if (escaped) {
+        escaped = false
+      } else if (character === '\\') {
+        escaped = true
+      } else if (character === '"') {
+        quoted = false
+      }
+      continue
+    }
+    if (character === '"') {
+      quoted = true
+      continue
+    }
+    if (character === '(') {
+      depth += 1
+      continue
+    }
+    if (character === ')') {
+      depth -= 1
+      continue
+    }
+    if (depth !== 0) continue
+    if (operator === '&&' && expression.slice(index, index + 2) === '&&') {
+      parts.push(expression.slice(start, index).trim())
+      start = index + 2
+      index += 1
+      continue
+    }
+    if (
+      operator === '+' &&
+      character === '+' &&
+      expression[index - 1] !== 'e' &&
+      expression[index - 1] !== 'E'
+    ) {
+      parts.push(expression.slice(start, index).trim())
+      start = index + 1
+    }
+  }
+  parts.push(expression.slice(start).trim())
+  return parts.filter(Boolean)
+}
+
+function parseTaskConditions(
+  expression: string,
+  schema: BillingUsageSchema,
+  includeBooleanConditions: boolean
+): TaskTierCondition[] | null {
+  const conditions: TaskTierCondition[] = []
+  for (const part of splitTaskTopLevel(expression, '&&')) {
+    const match = part.match(
+      /^u\(\s*("(?:[^"\\]|\\.)*")\s*\)\s*==\s*("(?:[^"\\]|\\.)*"|true|false)$/
+    )
+    if (!match) return null
+    let field: string
+    let value: string
+    try {
+      field = JSON.parse(match[1]) as string
+      value = String(JSON.parse(match[2]))
+    } catch {
+      return null
+    }
+    const definition = schema[field]
+    if (definition?.type === 'boolean') {
+      if (!includeBooleanConditions || !['true', 'false'].includes(match[2])) {
+        return null
+      }
+    } else if (
+      !definition?.enum?.includes(value) ||
+      !match[2].startsWith('"')
+    ) {
+      return null
+    }
+    conditions.push({ field, value })
+  }
+  return conditions.length > 0 ? conditions : null
+}
+
+function parseTaskTierCall(
+  expression: string,
+  conditions: TaskTierCondition[],
+  schema: BillingUsageSchema
+): ParsedTaskTier | null {
+  const trimmed = expression.trim()
+  if (!trimmed.startsWith('tier(') || !trimmed.endsWith(')')) return null
+  const inner = trimmed.slice(5, -1)
+  const commaIndex = findTaskTopLevelCharacter(inner, ',')
+  if (commaIndex < 0) return null
+
+  let label: string
+  try {
+    label = JSON.parse(inner.slice(0, commaIndex).trim()) as string
+  } catch {
+    return null
+  }
+  if (typeof label !== 'string') return null
+
+  const terms = splitTaskTopLevel(inner.slice(commaIndex + 1), '+')
+  const unitPrices: Record<string, number> = {}
+  const freeThresholds: Record<string, number> = {}
+  let constant = 0
+  let hasConstant = false
+  for (const rawTerm of terms) {
+    const term = rawTerm.trim()
+    if (NUMERIC_LITERAL_REGEX.test(term)) {
+      const value = Number(term)
+      if (hasConstant || !Number.isFinite(value) || value < 0) return null
+      constant = value
+      hasConstant = true
+      continue
+    }
+    const scaledMatch = term.match(
+      /^u\(\s*("(?:[^"\\]|\\.)*")\s*\)\s*\*\s*(-?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)\s*\/\s*1000000$/
+    )
+    const bareMatch = term.match(
+      /^u\(\s*("(?:[^"\\]|\\.)*")\s*\)\s*\*\s*(-?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)$/
+    )
+    const thresholdMatch = term.match(
+      /^\(\s*u\(\s*("(?:[^"\\]|\\.)*")\s*\)\s*>\s*(\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\s*\?\s*\(\s*u\(\s*\1\s*\)\s*-\s*\2\s*\)\s*\*\s*(-?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)\s*(\/\s*1000000)?\s*:\s*0\s*\)$/
+    )
+    const match = scaledMatch ?? bareMatch ?? thresholdMatch
+    if (!match) return null
+    let field: string
+    try {
+      field = JSON.parse(match[1]) as string
+    } catch {
+      return null
+    }
+    const fieldSchema = schema[field]
+    const value = thresholdMatch ? Number(thresholdMatch[3]) : Number(match[2])
+    if (
+      fieldSchema?.type !== 'number' ||
+      !fieldSchema.unit ||
+      field in unitPrices ||
+      !Number.isFinite(value) ||
+      value < 0
+    ) {
+      return null
+    }
+    if (fieldSchema.unit === 'token') {
+      if (!scaledMatch && !(thresholdMatch && thresholdMatch[4])) return null
+    } else if (scaledMatch || (thresholdMatch && thresholdMatch[4])) {
+      return null
+    }
+    unitPrices[field] = value
+    if (thresholdMatch) {
+      const threshold = Number(thresholdMatch[2])
+      if (!Number.isFinite(threshold) || threshold < 0) return null
+      freeThresholds[field] = threshold
+    }
+  }
+  if (Object.keys(unitPrices).length === 0) return null
+  return {
+    label,
+    conditions,
+    constant,
+    unitPrices,
+    ...(Object.keys(freeThresholds).length > 0 ? { freeThresholds } : {}),
+  }
+}
 
 export function parseTaskTiersFromExpr(
   exprStr: string,
@@ -378,8 +590,45 @@ export function parseTaskTiersFromExpr(
   if (!exprStr || !schema || Object.keys(schema).length === 0) return []
   const { billingExpr } = splitBillingExprAndRequestRules(exprStr)
   const compiled = compileBillingExpression(billingExpr)
-  if (compiled.status !== 'ready') return []
-  return readTaskTierChain(compiled.ast, schema, includeBooleanConditions) ?? []
+  if (compiled.status === 'ready') {
+    const astTiers = readTaskTierChain(compiled.ast, schema, includeBooleanConditions)
+    if (astTiers && astTiers.length > 0) return astTiers
+  }
+  try {
+    const versioned = stripExprVersion(billingExpr).body.trim()
+    if (!versioned) return []
+
+    const tiers: ParsedTaskTier[] = []
+    let remaining = versioned
+    while (remaining) {
+      const questionIndex = findTaskTopLevelCharacter(remaining, '?')
+      if (questionIndex < 0) {
+        const tier = parseTaskTierCall(remaining, [], schema)
+        if (!tier) return []
+        tiers.push(tier)
+        break
+      }
+      const colonIndex = findTaskTernaryColon(remaining, questionIndex)
+      if (colonIndex < 0) return []
+      const conditions = parseTaskConditions(
+        remaining.slice(0, questionIndex).trim(),
+        schema,
+        includeBooleanConditions
+      )
+      if (!conditions) return []
+      const tier = parseTaskTierCall(
+        remaining.slice(questionIndex + 1, colonIndex).trim(),
+        conditions,
+        schema
+      )
+      if (!tier) return []
+      tiers.push(tier)
+      remaining = remaining.slice(colonIndex + 1).trim()
+    }
+    return tiers
+  } catch {
+    return []
+  }
 }
 
 export function normalizeTierLabel(label: string | undefined): string {

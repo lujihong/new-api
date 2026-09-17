@@ -269,7 +269,6 @@ func (info *RelayInfo) RequestedImageCount() int {
 	}
 	return 1
 }
-}
 
 func (info *RelayInfo) InitChannelMeta(c *gin.Context) {
 	info.FinalRequestRelayFormat = ""
