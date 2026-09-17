@@ -21,12 +21,13 @@ import type {
   BillingUsageFieldSchema,
   BillingUsageSchema,
 } from '../types'
-
-export const TASK_TOKEN_PRICE_SCALE = 1_000_000
 import {
   parseTaskTiersFromExpr,
   splitBillingExprAndRequestRules,
 } from './billing-expr'
+import { evaluateBillingExpression } from './billing-expression/runtime'
+
+export const TASK_TOKEN_PRICE_SCALE = 1_000_000
 
 export type TaskVisualCondition = {
   field: string
@@ -143,13 +144,6 @@ export function taskMatrixRowLabel(
   return values.length > 0 ? values.join('·') : 'base'
 }
 
-function taskMatrixCombinationKey(
-  combination: Record<string, string>,
-  enumFields: [string, BillingUsageFieldSchema][]
-): string {
-  return JSON.stringify(enumFields.map(([field]) => combination[field]))
-}
-
 export function taskMatrixToTiers(
   config: TaskMatrixConfig,
   schema: BillingUsageSchema
@@ -212,10 +206,8 @@ export function tryParseTaskMatrixConfig(
   const tiers = parseTaskTiersFromExpr(expression, schema)
   if (tiers.length === 0) return null
 
-  const enumFields = getTaskEnumFields(schema)
   const numberFields = getTaskNumberFields(schema)
   const combinations = getTaskEnumCombinations(schema)
-
   if (tiers.length === 1 && tiers[0].conditions.length === 0) {
     return {
       rows: combinations.map((combination) => ({
@@ -238,48 +230,21 @@ export function tryParseTaskMatrixConfig(
   const fallbackTier = tiers.at(-1)
   if (!fallbackTier || fallbackTier.conditions.length !== 0) return null
 
-  const tiersByCombination = new Map<string, (typeof tiers)[number]>()
-  for (const tier of tiers.slice(0, -1)) {
-    if (tier.conditions.length !== enumFields.length) return null
-
-    const valuesByField = new Map<string, string>()
-    for (const condition of tier.conditions) {
-      const definition = schema[condition.field]
-      if (
-        valuesByField.has(condition.field) ||
-        !definition?.enum?.includes(condition.value)
-      ) {
-        return null
-      }
-      valuesByField.set(condition.field, condition.value)
-    }
-    if (valuesByField.size !== enumFields.length) return null
-
-    const combination = Object.fromEntries(
-      enumFields.map(([field]) => [field, valuesByField.get(field) ?? ''])
-    )
-    const key = taskMatrixCombinationKey(combination, enumFields)
-    if (tiersByCombination.has(key)) return null
-    tiersByCombination.set(key, tier)
+  for (const tier of tiers) {
+    const fields = new Set(tier.conditions.map((condition) => condition.field))
+    if (fields.size !== tier.conditions.length) return null
   }
 
-  const missingCombinations = combinations.filter(
-    (combination) =>
-      !tiersByCombination.has(taskMatrixCombinationKey(combination, enumFields))
-  )
-  if (missingCombinations.length !== 1) return null
-  tiersByCombination.set(
-    taskMatrixCombinationKey(missingCombinations[0], enumFields),
-    fallbackTier
-  )
-
-  const rows: TaskMatrixRow[] = []
-  for (const combination of combinations) {
-    const tier = tiersByCombination.get(
-      taskMatrixCombinationKey(combination, enumFields)
-    )
-    if (!tier) return null
-    rows.push({
+  const rows = combinations.map((combination) => {
+    // Conditions only constrain the fields they mention. Preserve the original
+    // first-match order when several branches cover the same combination.
+    const tier =
+      tiers.find((candidate) =>
+        candidate.conditions.every(
+          (condition) => combination[condition.field] === condition.value
+        )
+      ) ?? fallbackTier
+    return {
       combination,
       constant: tier.constant,
       unitPrices: Object.fromEntries(
@@ -288,8 +253,8 @@ export function tryParseTaskMatrixConfig(
       ...(tier.freeThresholds && Object.keys(tier.freeThresholds).length > 0
         ? { freeThresholds: { ...tier.freeThresholds } }
         : {}),
-    })
-  }
+    }
+  })
   return { rows }
 }
 
@@ -316,10 +281,8 @@ export function evaluateTaskVisualConfig(
   if (!Number.isFinite(constant) || constant < 0) return null
 
   const parts: TaskPreviewResult['parts'] = []
-  let total = 0
   if (constant > 0) {
     parts.push({ kind: 'constant', amount: constant })
-    total += constant
   }
 
   for (const [field, rawUnitPrice] of Object.entries(matchedTier.unitPrices)) {
@@ -344,11 +307,24 @@ export function evaluateTaskVisualConfig(
       quantity: billableQuantity,
       unitPrice,
     })
-    total += amount
   }
 
-  if (!Number.isFinite(total)) return null
-  return { tier: matchedTier, total, parts }
+  // Keep visual row selection and itemization, but share expression arithmetic
+  // and unit semantics with raw simulation. Zero-price fields remain optional.
+  const terms = [String(constant)]
+  const normalizedUsage = { ...sample }
+  for (const part of parts) {
+    if (part.kind !== 'usage' || !part.field) continue
+    normalizedUsage[part.field] = part.quantity ?? 0
+    const scale = schema?.[part.field]?.unit === 'token' ? ' / 1000000' : ''
+    terms.push(`u(${JSON.stringify(part.field)}) * ${part.unitPrice}${scale}`)
+  }
+  const result = evaluateBillingExpression(
+    `tier(${JSON.stringify(matchedTier.label)}, ${terms.join(' + ')})`,
+    { usage: normalizedUsage }
+  )
+  if (result.status !== 'success') return null
+  return { tier: matchedTier, total: result.cost, parts }
 }
 
 export function evaluateTaskUsageExamples(
