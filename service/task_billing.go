@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -334,39 +335,55 @@ func RecalculateTaskQuota(ctx context.Context, task *model.Task, actualQuota int
 // 当任务成功且返回了 totalTokens 时，根据模型倍率和分组倍率重新计算实际扣费额度，
 // 与预扣费的差额进行补扣或退还。支持钱包和订阅计费来源。
 func RecalculateTaskQuotaByTokens(ctx context.Context, task *model.Task, totalTokens int) bool {
-	if totalTokens <= 0 {
+	if task == nil || totalTokens <= 0 {
 		return false
 	}
 
-	modelName := taskModelName(task)
-
-	// 获取模型价格和倍率
-	modelRatio, hasRatioSetting, _ := ratio_setting.GetModelRatio(modelName)
-	// 只有配置了倍率(非固定价格)时才按 token 重新计费
-	if !hasRatioSetting || modelRatio <= 0 {
-		return false
-	}
-
-	// 获取用户和组的倍率信息
-	group := task.Group
-	if group == "" {
-		user, err := model.GetUserById(task.UserId, false)
-		if err == nil {
-			group = user.Group
+	bc := task.PrivateData.BillingContext
+	if bc != nil {
+		// 按次和阶梯计费必须走各自的结算路径，不能直接降级为 token 计费。
+		if bc.PerCallBilling || bc.TieredSnapshot != nil {
+			return false
+		}
+		if bc.ModelRatio < 0 || math.IsNaN(bc.ModelRatio) || math.IsInf(bc.ModelRatio, 0) ||
+			bc.GroupRatio < 0 || math.IsNaN(bc.GroupRatio) || math.IsInf(bc.GroupRatio, 0) {
+			logger.LogWarn(ctx, fmt.Sprintf("任务 %s 计费快照倍率非法，跳过 token 重算", task.TaskID))
+			return false
 		}
 	}
-	if group == "" {
-		return false
-	}
 
-	groupRatio := ratio_setting.GetGroupRatio(group)
-	userGroupRatio, hasUserGroupRatio := ratio_setting.GetGroupGroupRatio(group, group)
-
-	var finalGroupRatio float64
-	if hasUserGroupRatio {
-		finalGroupRatio = userGroupRatio
+	var modelRatio, finalGroupRatio float64
+	if bc != nil && bc.ModelRatio > 0 {
+		// 提交时已确定最终组倍率；0 是合法免收费，不再读取当前配置。
+		modelRatio, finalGroupRatio = bc.ModelRatio, bc.GroupRatio
 	} else {
-		finalGroupRatio = groupRatio
+		// 历史快照无版本/存在性标记，ModelRatio==0 不能证明提交时是免费模型。
+		// 保持原配置回退（包括同组特殊倍率查找），不追溯改变历史计价。
+		logger.LogWarn(ctx, fmt.Sprintf("任务 %s 缺少可识别的模型倍率快照，按历史逻辑使用当前配置进行 token 重算", task.TaskID))
+		var hasRatioSetting bool
+		modelRatio, hasRatioSetting, _ = ratio_setting.GetModelRatio(taskModelName(task))
+		if !hasRatioSetting || modelRatio <= 0 {
+			return false
+		}
+
+		group := task.Group
+		if group == "" {
+			user, err := model.GetUserById(task.UserId, false)
+			if err == nil {
+				group = user.Group
+			}
+		}
+		if group == "" {
+			return false
+		}
+
+		groupRatio := ratio_setting.GetGroupRatio(group)
+		userGroupRatio, hasUserGroupRatio := ratio_setting.GetGroupGroupRatio(group, group)
+		if hasUserGroupRatio {
+			finalGroupRatio = userGroupRatio
+		} else {
+			finalGroupRatio = groupRatio
+		}
 	}
 
 	// 计算 OtherRatios 乘积（视频折扣、时长等）

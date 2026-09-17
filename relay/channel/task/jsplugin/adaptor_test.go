@@ -28,6 +28,70 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestDoubaoLegacyMultipartReferenceBody(t *testing.T) {
+	source, err := plugins.Source("doubao")
+	require.NoError(t, err)
+	plugin, err := pluginruntime.NewRegistry().RegisterFactory(source, pluginruntime.Options{Key: "doubao"})
+	require.NoError(t, err)
+	var input bytes.Buffer
+	writer := multipart.NewWriter(&input)
+	for key, value := range map[string]string{"model": "doubao-seedance-2.0", "prompt": "landscape", "input_reference[]": "https://example.com/a.png", "seconds": "6", "resolution_name": "720p", "video_generate_audio": "false"} {
+		require.NoError(t, writer.WriteField(key, value))
+	}
+	require.NoError(t, writer.WriteField("input_reference[]", "https://example.com/b.png"))
+	require.NoError(t, writer.Close())
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/contents/generations/tasks", &input)
+	c.Request.Header.Set("Content-Type", writer.FormDataContentType())
+	_, err = common.ParseMultipartFormReusable(c)
+	require.NoError(t, err)
+	info := &relaycommon.RelayInfo{OriginModelName: "doubao-seedance-2.0", ChannelMeta: &relaycommon.ChannelMeta{ChannelBaseUrl: "https://example.com", UpstreamModelName: "doubao-seedance-2.0"}, TaskRelayInfo: &relaycommon.TaskRelayInfo{}}
+	adaptor := New(plugin)
+	adaptor.Init(info)
+	require.Nil(t, adaptor.ValidateRequestAndSetAction(c, info))
+	body, err := adaptor.BuildRequestBody(c, info)
+	require.NoError(t, err)
+	wire, err := io.ReadAll(body)
+	require.NoError(t, err)
+	var got map[string]any
+	require.NoError(t, common.Unmarshal(wire, &got))
+	assert.Equal(t, float64(6), got["duration"])
+	assert.Equal(t, "720p", got["resolution"])
+	assert.Equal(t, false, got["generate_audio"])
+	content := got["content"].([]any)
+	require.Len(t, content, 3)
+	assert.Equal(t, "https://example.com/a.png", content[0].(map[string]any)["image_url"].(map[string]any)["url"])
+	assert.Equal(t, "https://example.com/b.png", content[1].(map[string]any)["image_url"].(map[string]any)["url"])
+}
+
+func TestDoubaoLegacyJSONKeepsNativeContent(t *testing.T) {
+	source, err := plugins.Source("doubao")
+	require.NoError(t, err)
+	plugin, err := pluginruntime.NewRegistry().RegisterFactory(source, pluginruntime.Options{Key: "doubao"})
+	require.NoError(t, err)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/v3/contents/generations/tasks", strings.NewReader(`{"model":"doubao-seedance-2.0","duration":6,"resolution":"720p","generate_audio":false,"seed":0,"content":[{"type":"text","text":"landscape"},{"type":"image_url","image_url":{"url":"https://example.com/a.png"},"role":"first_frame"},{"type":"audio_url","audio_url":{"url":"https://example.com/a.mp3"},"role":"reference_audio"}]}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	info := &relaycommon.RelayInfo{OriginModelName: "doubao-seedance-2.0", ChannelMeta: &relaycommon.ChannelMeta{ChannelBaseUrl: "https://example.com", UpstreamModelName: "doubao-seedance-2.0"}, TaskRelayInfo: &relaycommon.TaskRelayInfo{}}
+	adaptor := New(plugin)
+	adaptor.Init(info)
+	require.Nil(t, adaptor.ValidateRequestAndSetAction(c, info))
+	body, err := adaptor.BuildRequestBody(c, info)
+	require.NoError(t, err)
+	wire, err := io.ReadAll(body)
+	require.NoError(t, err)
+	var got map[string]any
+	require.NoError(t, common.Unmarshal(wire, &got))
+	assert.Equal(t, "720p", got["resolution"])
+	assert.Equal(t, false, got["generate_audio"])
+	assert.Equal(t, float64(0), got["seed"])
+	content := got["content"].([]any)
+	require.Len(t, content, 3)
+	assert.Equal(t, "first_frame", content[0].(map[string]any)["role"])
+	assert.Equal(t, "reference_audio", content[1].(map[string]any)["role"])
+	assert.Equal(t, map[string]any{"url": "https://example.com/a.mp3"}, content[1].(map[string]any)["audio_url"])
+}
+
 const mockPlugin = `
 export const meta = {
   apiVersion: 1, key: "mock-task", name: "Mock Task", version: "1.0.0",

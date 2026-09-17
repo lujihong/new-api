@@ -51,6 +51,9 @@ export function getTaskMatrixDisplayTiers(
       .map(([field, value]) => ({ field, value })),
     constant: row.constant,
     unitPrices: { ...row.unitPrices },
+    ...(row.freeThresholds && Object.keys(row.freeThresholds).length > 0
+      ? { freeThresholds: { ...row.freeThresholds } }
+      : {}),
   }))
 }
 

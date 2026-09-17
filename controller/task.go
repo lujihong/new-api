@@ -306,10 +306,13 @@ func TaskArtifactContent(c *gin.Context) {
 			writeTaskArtifactError(c, http.StatusNotFound, "artifact_not_found", "Task or artifact not found")
 			return
 		}
-		descriptor := &relaychannel.TaskContentRequest{
-			URL:            task.GetResultURL(),
-			Method:         c.Request.Method,
-			Credentialless: true,
+		descriptor := resolveLegacyTaskContentRequest(task, c.Request.Method)
+		if descriptor == nil {
+			descriptor = &relaychannel.TaskContentRequest{
+				URL:            task.GetResultURL(),
+				Method:         c.Request.Method,
+				Credentialless: true,
+			}
 		}
 		if err := proxyTaskMedia(c, task, descriptor); err != nil {
 			writeTaskMediaProxyError(c, err)

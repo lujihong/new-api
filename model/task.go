@@ -12,6 +12,7 @@ import (
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	commonRelay "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/types"
 )
 
 type TaskStatus string
@@ -164,6 +165,35 @@ type TaskBillingContext struct {
 	OriginModelName string                       `json:"origin_model_name,omitempty"` // 模型名称，必须为OriginModelName
 	PerCallBilling  bool                         `json:"per_call_billing,omitempty"`  // 按次计费：跳过轮询阶段的差额结算
 	TieredSnapshot  *billingexpr.BillingSnapshot `json:"tiered_snapshot,omitempty"`
+	ModelDiscount   *TaskModelDiscountSnapshot   `json:"model_discount,omitempty"`
+}
+
+// TaskModelDiscountSnapshot records only this customer's selected discount.
+// GroupRatio in TaskBillingContext remains the final billing value; this
+// versioned provenance must not be applied a second time during polling.
+// Do not omit numeric zeros: both a free group and a free discount are valid.
+type TaskModelDiscountSnapshot struct {
+	Version        int     `json:"version"`
+	OriginModel    string  `json:"origin_model"`
+	BaseGroupRatio float64 `json:"base_group_ratio"`
+	Factor         float64 `json:"factor"`
+	Source         string  `json:"source"`
+	Revision       string  `json:"revision"`
+}
+
+func NewTaskModelDiscountSnapshot(priceData types.PriceData) *TaskModelDiscountSnapshot {
+	group := priceData.GroupRatioInfo
+	if !group.HasModelDiscount {
+		return nil
+	}
+	return &TaskModelDiscountSnapshot{
+		Version:        1,
+		OriginModel:    group.ModelDiscountModel,
+		BaseGroupRatio: group.BaseGroupRatio,
+		Factor:         group.ModelDiscount,
+		Source:         group.ModelDiscountSource,
+		Revision:       group.ModelDiscountRevision,
+	}
 }
 
 // GetUpstreamTaskID 获取上游真实 task ID（用于与 provider 通信）

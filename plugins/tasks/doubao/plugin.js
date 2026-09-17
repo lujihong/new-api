@@ -7,7 +7,7 @@ export const meta = {
     en: "Volcengine Doubao Seedance video generation (text-to-video, image-to-video, and video-to-video)",
     zh: "火山引擎豆包 Seedance 视频生成（文生视频、图生视频、视频生视频）",
   },
-  version: "1.0.2",
+  version: "1.0.3",
   author: { name: "QuantumNous" },
   channelTypes: [54, 45], // VolcEngine-type channels serve Ark video models with the same wire format
   models: [
@@ -19,6 +19,12 @@ export const meta = {
     "doubao-seedance-2-0-fast-260128",
     "doubao-seedance-2-0-mini-260615",
     "doubao-seedance-2-5-260628",
+    "doubao-seedance-2.0",
+    "doubao-seedance-2.0-fast",
+    "doubao-seedance-2.0-mini",
+    "doubao-seedance-2.5",
+    "doubao-seedance-1.5-pro",
+    "doubao-seedance-1.0-pro",
   ],
   fetchMode: "per_task",
   usageSchema: {
@@ -118,6 +124,18 @@ function hasVideo(content) {
   return Array.isArray(content) && content.some((item) => item && (item.type === "video_url" || Object.prototype.hasOwnProperty.call(item, "video_url")));
 }
 
+function hasReferenceVideo(req, metadata) {
+  const content = Array.isArray(metadata.content) ? metadata.content : Array.isArray(req.content) ? req.content : [];
+  if (hasVideo(content)) return true;
+  for (const source of [req, metadata]) {
+    for (const key of ["video_reference", "video_reference[]"]) {
+      const value = source[key];
+      if (Array.isArray(value) ? value.some((item) => trimmed(item)) : trimmed(value)) return true;
+    }
+  }
+  return false;
+}
+
 // Max-pixel 16:9 dimensions per resolution tier. Used when ratio is absent or
 // adaptive so the submit-time estimate overestimates rather than underestimates.
 // Official Ark formula: tokens = seconds × width × height × 24 / 1024.
@@ -137,18 +155,29 @@ function estimateTokens(seconds, resolution) {
 function videoInputRatio(model, resolution, content) {
   const video = hasVideo(content);
   const res = trimmed(resolution).toLowerCase();
-  if (model === "doubao-seedance-2-5-260628") {
+  const m = trimmed(model).toLowerCase();
+  if (m === "doubao-seedance-2-5-260628" || m === "doubao-seedance-2.5") {
     if (res === "1080p") return video ? 7.0 / 10.7 : 11.7 / 10.7;
     return video ? 42 / 70 : 1;
   }
-  if (model === "doubao-seedance-2-0-260128") {
+  if (m === "doubao-seedance-2-0-260128" || m === "doubao-seedance-2.0" || m === "doubao-seedance-2-0") {
     if (res === "1080p") return video ? 31 / 46 : 51 / 46;
     if (res === "4k") return video ? 16 / 46 : 26 / 46;
     return video ? 28 / 46 : 1;
   }
-  if (model === "doubao-seedance-2-0-fast-260128") return video ? 22 / 37 : 1;
-  if (model === "doubao-seedance-2-0-mini-260615") return video ? 14 / 23 : 1;
+  if (m === "doubao-seedance-2-0-fast-260128" || m === "doubao-seedance-2.0-fast") return video ? 22 / 37 : 1;
+  if (m === "doubao-seedance-2-0-mini-260615" || m === "doubao-seedance-2.0-mini") return video ? 14 / 23 : 1;
   return 1;
+}
+
+function normalizeAssetUri(val) {
+  if (val && typeof val === "object" && !Array.isArray(val)) val = val.url;
+  if (typeof val !== "string") throw new Error("media reference must be a URL string or an object with a URL string");
+  const str = val.trim();
+  if (!str) throw new Error("media reference URL is empty");
+  if (str.startsWith("group-")) throw new Error("a material group ID cannot be used as an asset ID");
+  if (str.startsWith("asset-")) return "asset://" + str;
+  return str;
 }
 
 function responsesInput(req) {
@@ -174,7 +203,7 @@ function responsesInput(req) {
         if (["input_image", "image_url"].includes(part.type)) {
           let image = part.image_url;
           if (image && typeof image === "object") image = image.url;
-          if (trimmed(image)) images.push(trimmed(image));
+          if (image !== undefined && image !== null && image !== "") images.push(normalizeAssetUri(image));
         }
       }
     }
@@ -246,23 +275,100 @@ export const native = {
   },
 };
 
+function doubaoBaseUrl(rawBaseUrl) {
+  const base = String(rawBaseUrl || "").trim().replace(/\/+$/, "");
+  return base.replace(/\/api\/v3$/i, "");
+}
+
 export function buildSubmitRequest(ctx) {
   const req = ctx.requestBody;
   const metadata = req.metadata || {};
   const body = Object.assign({ model: req.model || "", content: [] }, metadata);
   const imageContent = [];
-  const images = Array.isArray(req.images) ? req.images : [];
-  for (const url of images) imageContent.push({ type: "image_url", image_url: { url: url } });
-  const metadataContent = Array.isArray(body.content) ? body.content : [];
-  body.content = imageContent.concat(metadataContent).filter((item) => item && item.type !== "text");
+
+  // 智能收集并归一化所有参考图、首尾帧与 AICC 真人素材资产（支持 asset:// 与 asset-id）
+  const candidateImages = [];
+  if (Array.isArray(req.images)) {
+    for (const u of req.images) candidateImages.push(u);
+  }
+  for (const source of [req, metadata]) {
+    for (const key of ["image", "input_reference", "input_reference[]", "asset_id", "liveness_asset_id"]) {
+      const field = source[key];
+      if (field === undefined || field === null || field === "") continue;
+      for (const value of Array.isArray(field) ? field : [field]) candidateImages.push(value);
+      delete body[key];
+    }
+  }
+  const seenUrls = new Set();
+  for (const raw of candidateImages) {
+    const norm = normalizeAssetUri(raw);
+    if (norm && !seenUrls.has(norm)) {
+      seenUrls.add(norm);
+      imageContent.push({ type: "image_url", image_url: { url: norm } });
+    }
+  }
+
+  const metadataContent = Array.isArray(body.content) && body.content.length ? body.content : (Array.isArray(req.content) ? req.content : []);
+  const references = metadataContent.filter((item) => item && item.type !== "text").map((item) => {
+    const type = item.type;
+    if (!["image_url", "video_url", "audio_url"].includes(type)) return item;
+    const media = item[type];
+    if (!media || typeof media !== "object" || Array.isArray(media)) throw new Error(type + " must be an object with a URL string");
+    const copy = Object.assign({}, item);
+    copy[type] = Object.assign({}, media, { url: normalizeAssetUri(media) });
+    return copy;
+  });
+  // Native decoding may derive images from content; retain the original roles without duplicating those images.
+  const contentImageUrls = references.filter((item) => item.type === "image_url" && item.image_url).map((item) => normalizeAssetUri(item.image_url));
+  body.content = imageContent.filter((item) => !contentImageUrls.includes(item.image_url.url)).concat(references);
+  for (const source of [req, metadata]) {
+    for (const [key, type, role] of [["first_frame_url", "image_url", "first_frame"], ["last_frame_url", "image_url", "last_frame"], ["video_reference", "video_url", "reference_video"], ["video_reference[]", "video_url", "reference_video"], ["audio_reference", "audio_url", "reference_audio"], ["audio_reference[]", "audio_url", "reference_audio"]]) {
+      const value = source[key];
+      if (value === undefined || value === null || value === "") continue;
+      for (const reference of Array.isArray(value) ? value : [value]) {
+        const item = { type: type, role: role };
+        item[type] = { url: normalizeAssetUri(reference) };
+        body.content.push(item);
+      }
+      delete body[key];
+    }
+  }
   const hasReference = body.content.length > 0;
-  if (trimmed(req.prompt) || !hasReference) body.content.push({ type: "text", text: req.prompt || "" });
+  const prompt = trimmed(req.prompt) || metadataContent.filter((item) => item && item.type === "text" && typeof item.text === "string").map((item) => item.text).join("\n");
+  if (prompt || !hasReference) body.content.push({ type: "text", text: prompt });
   if (Array.isArray(body.content)) body.content = rewriteDraftTaskContent(body.content, ctx.originTasks);
-  const seconds = Number.parseInt(req.seconds || "", 10);
-  if (seconds > 0) body.duration = seconds;
-  body.model = ctx.upstreamModel || body.model;
+  const durationValue = req.seconds !== undefined && req.seconds !== "" ? req.seconds : (req.duration !== undefined ? req.duration : body.duration);
+  if (durationValue !== undefined) {
+    const seconds = Number(durationValue);
+    if (!Number.isInteger(seconds) || seconds <= 0 || seconds > 3600) throw new Error("seconds must be an integer between 1 and 3600");
+    body.duration = seconds;
+  }
+  const resolution = req.resolution || req.resolution_name || body.resolution || body.resolution_name;
+  if (resolution !== undefined) body.resolution = normalizeResolution(resolution);
+  if (typeof req.size === "string" && /^(\d+:\d+|adaptive)$/.test(req.size)) body.ratio = req.size;
+  for (const key of ["ratio", "seed", "watermark", "generate_audio", "return_last_frame", "camera_fixed", "service_tier", "execution_expires_after"]) {
+    if (req[key] !== undefined) body[key] = req[key];
+  }
+  if (body.generate_audio === undefined) body.generate_audio = req.video_generate_audio !== undefined ? req.video_generate_audio : metadata.video_generate_audio;
+  for (const key of ["watermark", "generate_audio", "return_last_frame", "camera_fixed"]) {
+    if (body[key] === "false") body[key] = false;
+    else if (body[key] === "true") body[key] = true;
+    else if (body[key] !== undefined && typeof body[key] !== "boolean") throw new Error(key + " must be a boolean");
+  }
+  delete body.resolution_name;
+  delete body.video_generate_audio;
+  let targetModel = ctx.upstreamModel || body.model;
+  const isCmeCloud = String(ctx.baseUrl || "").toLowerCase().includes("cmecloud.cn");
+  if (!ctx.upstreamModel && !isCmeCloud) {
+    if (targetModel === "doubao-seedance-2.0") targetModel = "doubao-seedance-2-0-260128";
+    else if (targetModel === "doubao-seedance-2.0-fast") targetModel = "doubao-seedance-2-0-fast-260128";
+    else if (targetModel === "doubao-seedance-2.0-mini") targetModel = "doubao-seedance-2-0-mini-260615";
+    else if (targetModel === "doubao-seedance-2.5") targetModel = "doubao-seedance-2-5-260628";
+  }
+  body.model = targetModel;
+  const baseUrl = doubaoBaseUrl(ctx.baseUrl);
   return {
-    url: ctx.baseUrl + "/api/v3/contents/generations/tasks",
+    url: baseUrl + "/api/v3/contents/generations/tasks",
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json", Authorization: "Bearer " + ctx.apiKey },
     body: body,
@@ -290,20 +396,22 @@ export function extractUsage(ctx) {
   }
   if (seconds <= 0) seconds = 5;
   seconds = Math.min(seconds, 3600);
-  const rawResolution = metadata.resolution || req.size;
+  const rawResolution = req.resolution || req.resolution_name || metadata.resolution || metadata.resolution_name || req.size;
   const raw = trimmed(rawResolution).toLowerCase();
   const recognized = ["480p", "720p", "1080p", "4k"].includes(raw) || raw.replace("*", "x").split("x").length === 2;
-  const resolution = recognized ? normalizeResolution(rawResolution) : "1080p";
+  const resolution = recognized ? normalizeResolution(rawResolution) : (raw === "16:9" || raw === "9:16" || raw === "1:1" ? "720p" : "1080p");
+  const hasRefVideo = hasReferenceVideo(req, metadata);
   return {
     tokens: estimateTokens(seconds, resolution),
     resolution: resolution,
-    video_input: hasVideo(metadata.content) ? "video" : "none",
+    video_input: hasRefVideo ? "video" : "none",
   };
 }
 
 export function buildQueryRequest(ctx) {
+  const baseUrl = doubaoBaseUrl(ctx.baseUrl);
   return {
-    url: ctx.baseUrl + "/api/v3/contents/generations/tasks/" + ctx.taskId,
+    url: baseUrl + "/api/v3/contents/generations/tasks/" + ctx.taskId,
     method: "GET",
     headers: { Accept: "application/json", "Content-Type": "application/json", Authorization: "Bearer " + ctx.apiKey },
   };
@@ -322,7 +430,10 @@ export function parseTaskResult(ctx, body) {
     return result;
   }
   if (body.status === "failed" || body.status === "expired" || body.status === "cancelled") {
-    const reason = body.error && body.error.message ? body.error.message : body.status;
+    let reason = body.error && body.error.message ? body.error.message : body.status;
+    if (reason && typeof reason === "string" && (reason.includes("真人") || reason.includes("肖像") || reason.includes("实名认证") || reason.toLowerCase().includes("face") || reason.toLowerCase().includes("security"))) {
+      reason = "移动云真人合规拦截: " + reason + " (请先在 AICC 素材库完成真人 H5 实名认证，并在生视频时传 asset://{asset_id})";
+    }
     return { status: "FAILURE", progress: "100%", reason: reason };
   }
   return { status: "UNKNOWN", reason: "unrecognized status: " + String(body.status || "") };
@@ -379,10 +490,14 @@ export const protocols = {
       const input = responsesInput(req);
       const prompt = input.prompt || trimmed(req.prompt);
       const images = [];
-      for (const image of [req.image, req.input_reference].concat(req.images || [], input.images)) {
-        if (trimmed(image) && !images.includes(trimmed(image))) images.push(trimmed(image));
+      for (const image of [req.image, req.input_reference, req["input_reference[]"]].concat(req.images || [], input.images)) {
+        if (image === undefined || image === null || image === "") continue;
+        for (const ref of Array.isArray(image) ? image : [image]) {
+          const url = normalizeAssetUri(ref);
+          if (!images.includes(url)) images.push(url);
+        }
       }
-      if (!prompt && images.length === 0) throw new Error("input is required");
+      if (!prompt && images.length === 0 && !(req.metadata && Array.isArray(req.metadata.content) && req.metadata.content.length)) throw new Error("input is required");
       const metadata = Object.assign({}, req.metadata || {});
       if (Object.prototype.hasOwnProperty.call(req, "resolution")) metadata.resolution = req.resolution;
       else if (req.size && !metadata.resolution) metadata.resolution = normalizeResolution(req.size);
@@ -456,10 +571,11 @@ protocols.openai_video = {
       const seconds = req.seconds === undefined ? req.duration : req.seconds;
       if (seconds !== undefined && (!Number.isFinite(Number(seconds)) || Number(seconds) <= 0 || Number(seconds) > 3600))
         throw new Error("seconds must be between 1 and 3600");
+      const hasRef = Boolean(req.input_reference || req["input_reference[]"] || req.image || req.asset_id || req.liveness_asset_id || (Array.isArray(req.images) && req.images.length > 0) || (Array.isArray(req.content) && req.content.some((item) => item && item.type !== "text")) || (req.metadata && Array.isArray(req.metadata.content) && req.metadata.content.some((item) => item && item.type !== "text")));
       return {
         kind: "submit",
         model: ctx.model,
-        action: req.input_reference || req.image ? "image_to_video" : "text_to_video",
+        action: hasRef ? "image_to_video" : "text_to_video",
         requestBody: Object.assign({}, req, { model: ctx.model }),
       };
     }
@@ -471,7 +587,7 @@ protocols.openai_video = {
     const req = {};
     const fields = ctx.body.fields || {};
     for (const name of Object.keys(fields)) {
-      req[name] = first(name);
+      req[name] = ["images", "input_reference[]", "video_reference[]", "audio_reference[]"].includes(name) ? fields[name] : first(name);
     }
     if (req.metadata !== undefined) {
       let parsed;
@@ -489,14 +605,21 @@ protocols.openai_video = {
     const seconds = req.seconds === undefined ? req.duration : req.seconds;
     if (seconds !== undefined && (!Number.isFinite(Number(seconds)) || Number(seconds) <= 0 || Number(seconds) > 3600))
       throw new Error("seconds must be between 1 and 3600");
+    const hasRef = Boolean(req.input_reference || req["input_reference[]"] || req.image || req.asset_id || req.liveness_asset_id || (Array.isArray(req.images) && req.images.length > 0) || (Array.isArray(req.content) && req.content.some((item) => item && item.type !== "text")) || (req.metadata && Array.isArray(req.metadata.content) && req.metadata.content.some((item) => item && item.type !== "text")));
     return {
       kind: "submit",
       model: ctx.model,
-      action: req.input_reference || req.image ? "image_to_video" : "text_to_video",
+      action: hasRef ? "image_to_video" : "text_to_video",
       requestBody: Object.assign({}, req, { model: ctx.model }),
     };
   },
   render: function (ctx, task) {
-    return legacyRenderers.openai_video(task);
+    const output = legacyRenderers.openai_video(task);
+    const video = ctx.artifacts && ctx.artifacts.video;
+    if (task.status === "SUCCESS" && video && video.type === "video" && trimmed(video.url)) {
+      output.video_url = video.url;
+      output.url = video.url;
+    }
+    return output;
   },
 };

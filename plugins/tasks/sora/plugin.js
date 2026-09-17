@@ -8,7 +8,7 @@ export const meta = {
     zh: "OpenAI Sora 视频生成（文生视频、图生视频、remix）",
   },
   version: "1.0.3",
-  channelTypes: [55, 1], // OpenAI-type channels natively serve sora with the same wire format
+  channelTypes: [55, 1, 60, 59, 8, 58], // OpenAI-type and gateway channels natively serve sora with the same wire format
   author: { name: "QuantumNous" },
   models: ["sora-2", "sora-2-pro"],
   fetchMode: "per_task",
@@ -21,12 +21,31 @@ export const meta = {
     },
     // Requested output video dimensions.
     size: {
-      enum: ["720x1280", "1280x720", "1792x1024", "1024x1792"],
+      enum: [
+        "720x1280",
+        "1280x720",
+        "1792x1024",
+        "1024x1792",
+        "16:9",
+        "9:16",
+        "1:1",
+        "4:3",
+        "3:4",
+        "21:9",
+        "adaptive",
+      ],
       enumLabels: {
         "720x1280": { en: "720x1280", zh: "720x1280" },
         "1280x720": { en: "1280x720", zh: "1280x720" },
         "1792x1024": { en: "1792x1024", zh: "1792x1024" },
         "1024x1792": { en: "1024x1792", zh: "1024x1792" },
+        "16:9": { en: "16:9", zh: "16:9" },
+        "9:16": { en: "9:16", zh: "9:16" },
+        "1:1": { en: "1:1", zh: "1:1" },
+        "4:3": { en: "4:3", zh: "4:3" },
+        "3:4": { en: "3:4", zh: "3:4" },
+        "21:9": { en: "21:9", zh: "21:9" },
+        "adaptive": { en: "Adaptive", zh: "自适应" },
       },
       description: { en: "Output video dimensions", zh: "输出视频尺寸" },
     },
@@ -122,20 +141,31 @@ export function parseSubmitResponse(ctx, resp) {
   return { taskId, taskData: body };
 }
 
+function normalizeSoraSize(rawSize) {
+  const s = String(rawSize || "").trim().toLowerCase();
+  if (["720x1280", "1280x720", "1792x1024", "1024x1792"].includes(s)) return s;
+  if (s === "16:9" || s === "1280*720" || s === "720p" || s === "horizontal") return "1280x720";
+  if (s === "9:16" || s === "720*1280" || s === "vertical") return "720x1280";
+  if (s === "1080p" || s === "1920x1080" || s === "1792x1024") return "1792x1024";
+  if (s === "1080x1920") return "1024x1792";
+  if (s === "1:1") return "1280x720";
+  return s || "720x1280";
+}
+
 export function extractUsage(ctx) {
   if (ctx.action === "remix") return {};
   const req = ctx.requestBody || {};
   let seconds = Number(req.seconds || req.duration || 4);
   if (!Number.isFinite(seconds) || seconds <= 0) seconds = 4;
-  return { seconds: Math.min(seconds, 3600), size: req.size || "720x1280" };
+  return { seconds: Math.min(seconds, 3600), size: normalizeSoraSize(req.size) };
 }
 
 export function extractUsageOnComplete(task, taskResult, body) {
   const facts = {};
   const seconds = Number((body || {}).seconds || (body || {}).duration || 0);
   if (Number.isFinite(seconds) && seconds > 0) facts.seconds = Math.min(seconds, 3600);
-  const size = trimmed((body || {}).size);
-  if (["720x1280", "1280x720", "1792x1024", "1024x1792"].includes(size)) facts.size = size;
+  const size = normalizeSoraSize((body || {}).size);
+  if (size) facts.size = size;
   return facts;
 }
 

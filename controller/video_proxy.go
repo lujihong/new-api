@@ -137,6 +137,19 @@ func VideoProxy(c *gin.Context) {
 	}
 }
 
+func getChannelForTask(channelId int) *model.Channel {
+	if channelId <= 0 {
+		return nil
+	}
+	if ch, err := model.CacheGetChannel(channelId); err == nil && ch != nil {
+		return ch
+	}
+	if ch, err := model.GetChannelById(channelId, true); err == nil && ch != nil {
+		return ch
+	}
+	return nil
+}
+
 func resolveLegacyTaskContentRequest(task *model.Task, method string) *relaychannel.TaskContentRequest {
 	if task == nil {
 		return nil
@@ -171,7 +184,7 @@ func resolveLegacyTaskContentRequest(task *model.Task, method string) *relaychan
 			if target != "" && !isTaskMediaFallbackLoop(target, task.TaskID) {
 				headers := map[string]string{}
 				if task.ChannelId > 0 && strings.Contains(target, "/videos/") && strings.HasSuffix(target, "/content") {
-					if ch, chErr := model.CacheGetChannel(task.ChannelId); chErr == nil && ch != nil && ch.Key != "" {
+					if ch := getChannelForTask(task.ChannelId); ch != nil && ch.Key != "" {
 						headers["Authorization"] = "Bearer " + ch.Key
 					}
 				}
@@ -185,10 +198,36 @@ func resolveLegacyTaskContentRequest(task *model.Task, method string) *relaychan
 		}
 	}
 
-	// 2. 针对 OpenAI/Sora/NewAPI 等聚合渠道任务，向上游构造带 Key 代理请求
+	// 2. Prefer a persisted result URL before reconstructing an upstream URL.
+	// This covers data URLs and providers that return a signed media URL; using
+	// the local task endpoint as a fallback here would trip the loop guard.
+	if resultURL := strings.TrimSpace(task.GetResultURL()); resultURL != "" &&
+		!isTaskMediaFallbackLoop(resultURL, task.TaskID) {
+		headers := map[string]string{}
+		if parsed, parseErr := url.Parse(resultURL); parseErr == nil &&
+			strings.Contains(parsed.Path, "/videos/") &&
+			strings.HasSuffix(parsed.Path, "/content") && task.ChannelId > 0 {
+			if channel := getChannelForTask(task.ChannelId); channel != nil && channel.Key != "" {
+				base, baseErr := url.Parse(channel.GetBaseURL())
+				if baseErr == nil && base != nil &&
+					strings.EqualFold(base.Scheme, parsed.Scheme) &&
+					strings.EqualFold(base.Host, parsed.Host) {
+					headers["Authorization"] = "Bearer " + channel.Key
+				}
+			}
+		}
+		return &relaychannel.TaskContentRequest{
+			URL:            resultURL,
+			Method:         http.MethodGet,
+			Headers:        headers,
+			Credentialless: len(headers) == 0,
+		}
+	}
+
+	// 3. 针对 OpenAI/Sora/NewAPI 等聚合渠道任务，向上游构造带 Key 代理请求
 	if task.ChannelId > 0 && task.GetUpstreamTaskID() != "" {
-		channel, err := model.CacheGetChannel(task.ChannelId)
-		if err == nil && channel != nil {
+		channel := getChannelForTask(task.ChannelId)
+		if channel != nil {
 			baseURL := channel.GetBaseURL()
 			if baseURL != "" {
 				upstreamURL := fmt.Sprintf("%s/v1/videos/%s/content", strings.TrimRight(baseURL, "/"), task.GetUpstreamTaskID())

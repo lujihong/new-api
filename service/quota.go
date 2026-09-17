@@ -104,20 +104,22 @@ func PreWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usag
 	textOutTokens := usage.OutputTokenDetails.TextTokens
 	audioInputTokens := usage.InputTokenDetails.AudioTokens
 	audioOutTokens := usage.OutputTokenDetails.AudioTokens
-	groupRatio := ratio_setting.GetGroupRatio(relayInfo.UsingGroup)
 	modelRatio, _, _ := ratio_setting.GetModelRatio(modelName)
 
-	autoGroup, exists := common.GetContextKey(ctx, constant.ContextKeyAutoGroup)
-	if exists {
-		groupRatio = ratio_setting.GetGroupRatio(autoGroup.(string))
-		logger.LogDebug(ctx, "final group ratio: %f", groupRatio)
-		relayInfo.UsingGroup = autoGroup.(string)
-	}
-
-	actualGroupRatio := groupRatio
-	userGroupRatio, ok := ratio_setting.GetGroupGroupRatio(relayInfo.UserGroup, relayInfo.UsingGroup)
-	if ok {
-		actualGroupRatio = userGroupRatio
+	// Normal realtime requests are priced before starting websocket workers.
+	// Reuse the selected attempt's final ratio so incremental charges and final
+	// settlement cannot drift when an administrator edits rules mid-session.
+	groupRatioInfo := relayInfo.PriceData.GroupRatioInfo
+	if !groupRatioInfo.HasModelDiscount {
+		// Compatibility for callers that bypass initial pricing. Never interpret
+		// a zero-valued ModelDiscount as a selected free rule.
+		if ctx != nil {
+			if autoGroup, exists := common.GetContextKey(ctx, constant.ContextKeyAutoGroup); exists {
+				relayInfo.UsingGroup = autoGroup.(string)
+			}
+		}
+		groupRatioInfo = relayInfo.ResolveGroupRatio()
+		relayInfo.PriceData.GroupRatioInfo = groupRatioInfo
 	}
 
 	quotaInfo := QuotaInfo{
@@ -132,7 +134,7 @@ func PreWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usag
 		ModelName:  modelName,
 		UsePrice:   relayInfo.UsePrice,
 		ModelRatio: modelRatio,
-		GroupRatio: actualGroupRatio,
+		GroupRatio: groupRatioInfo.GroupRatio,
 	}
 
 	quota, clamp := calculateAudioQuota(quotaInfo)

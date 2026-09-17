@@ -90,6 +90,110 @@ type TaskAdaptor struct {
 func New(plugin *pluginruntime.LoadedPlugin) *TaskAdaptor { return &TaskAdaptor{plugin: plugin} }
 func (a *TaskAdaptor) Init(info *relaycommon.RelayInfo)   { a.info = info }
 
+func validateAICCAssetReferences(userID int, request any) error {
+	return validateAICCAssetReferencesForChannel(userID, request, nil)
+}
+
+func validateAICCAssetReferencesForChannel(userID int, request any, channelID *int) error {
+	// Inspect decoded trees directly. Serializing unrelated plugin billing facts
+	// here misclassifies non-finite usage values as asset authorization failures.
+	// Typed legacy values are normalized locally by the visitor below.
+	assetIDs := make([]string, 0)
+	depth, visited := 0, 0
+	var visit func(any, bool) error
+	visit = func(value any, media bool) error {
+		depth++
+		visited++
+		defer func() { depth-- }()
+		if depth > 128 || visited > 100000 {
+			return fmt.Errorf("task reference structure exceeds validation limits")
+		}
+		switch typed := value.(type) {
+		case string:
+			text := strings.TrimSpace(typed)
+			if media && (strings.HasPrefix(text, "asset://") || strings.HasPrefix(text, "asset-")) {
+				id := strings.TrimPrefix(text, "asset://")
+				if !strings.HasPrefix(id, "asset-") || strings.ContainsAny(id, "/?#%\\\" \t\r\n") {
+					return fmt.Errorf("invalid AICC asset reference")
+				}
+				assetIDs = append(assetIDs, id)
+			}
+		case nil, bool, float32, float64, int, int32, int64, uint, uint32, uint64:
+			// Numeric validity belongs to the host billing validator.
+		case []string:
+			for _, item := range typed {
+				if err := visit(item, media); err != nil {
+					return err
+				}
+			}
+		case []any:
+			for _, item := range typed {
+				if err := visit(item, media); err != nil {
+					return err
+				}
+			}
+		case map[string]any:
+			for key, item := range typed {
+				switch key {
+				case "prompt", "text", "description", "negative_prompt":
+					continue
+				case "metadata":
+					// Normalize typed metadata before recognizing a JSON-encoded string.
+					switch item.(type) {
+					case string, map[string]any, []any, nil:
+					default:
+						wire, err := common.Marshal(item)
+						if err != nil {
+							return err
+						}
+						var normalizedMetadata any
+						if err := common.Unmarshal(wire, &normalizedMetadata); err != nil {
+							return err
+						}
+						item = normalizedMetadata
+					}
+					if text, ok := item.(string); ok {
+						var decoded any
+						if err := common.Unmarshal([]byte(text), &decoded); err != nil {
+							return fmt.Errorf("invalid task metadata")
+						}
+						item = decoded
+					}
+				case "image", "images", "input_reference", "input_reference[]", "asset_id", "liveness_asset_id", "image_url", "video_url", "audio_url", "first_frame_url", "last_frame_url", "video_reference", "video_reference[]", "audio_reference", "audio_reference[]":
+					if err := visit(item, true); err != nil {
+						return err
+					}
+					continue
+				}
+				if err := visit(item, media); err != nil {
+					return err
+				}
+			}
+		default:
+			wire, err := common.Marshal(value)
+			if err != nil {
+				return err
+			}
+			var normalized any
+			if err := common.Unmarshal(wire, &normalized); err != nil {
+				return err
+			}
+			return visit(normalized, media)
+		}
+		return nil
+	}
+	if err := visit(request, false); err != nil {
+		return err
+	}
+	if err := model.ValidateUserAICCAssetIDs(userID, assetIDs); err != nil {
+		return err
+	}
+	if len(assetIDs) > 0 && channelID != nil {
+		return service.ValidateAICCVideoChannel(*channelID)
+	}
+	return nil
+}
+
 func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycommon.RelayInfo) *dto.TaskError {
 	if pinnedValue, exists := c.Get(pluginruntime.ContextKeyPinnedEndpoint); exists {
 		if pinned, ok := pinnedValue.(pluginruntime.PinnedEndpoint); ok && pinned.Plugin == a.plugin {
@@ -124,9 +228,16 @@ func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycom
 		if err := a.validateResolvedUsageRequest(request); err != nil {
 			return service.TaskErrorWrapperLocal(err, "plugin_usage_invalid", http.StatusBadRequest)
 		}
+		if err := validateAICCAssetReferencesForChannel(info.UserId, request, &info.ChannelId); err != nil {
+			return service.TaskErrorWrapperLocal(err, "aicc_asset_forbidden", http.StatusForbidden)
+		}
 	}
-	if _, err := a.buildSubmit(c, info); err != nil {
+	descriptor, err := a.buildSubmit(c, info)
+	if err != nil {
 		return service.TaskErrorWrapperLocal(err, "plugin_request_invalid", http.StatusBadRequest)
+	}
+	if err := validateAICCAssetReferencesForChannel(info.UserId, descriptor.Body, &info.ChannelId); err != nil {
+		return service.TaskErrorWrapperLocal(err, "aicc_asset_forbidden", http.StatusForbidden)
 	}
 	return nil
 }
@@ -797,7 +908,23 @@ func (a *TaskAdaptor) ConvertToOpenAIVideo(task *model.Task) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	value, err := a.plugin.Engine.CallPath(context.Background(), "protocols", []string{"openai_video", "render"}, map[string]any{"protocol": "openai_video", "operation": "retrieve"}, jsonValue(view))
+	renderContext := map[string]any{"protocol": "openai_video", "operation": "retrieve"}
+	if task.Status == model.TaskStatusSuccess {
+		artifacts, artifactErr := a.ListArtifacts(task)
+		if artifactErr != nil {
+			return nil, artifactErr
+		}
+		projected := make(map[string]any, len(artifacts))
+		for _, artifact := range artifacts {
+			contentURL, urlErr := service.BuildTaskArtifactContentURL(task.TaskID, artifact.Key)
+			if urlErr != nil {
+				return nil, urlErr
+			}
+			projected[artifact.Key] = map[string]any{"key": artifact.Key, "type": artifact.Type, "url": contentURL}
+		}
+		renderContext["artifacts"] = projected
+	}
+	value, err := a.plugin.Engine.CallPath(context.Background(), "protocols", []string{"openai_video", "render"}, renderContext, jsonValue(view))
 	if err != nil {
 		return nil, err
 	}
@@ -1277,6 +1404,10 @@ func (a *TaskAdaptor) submitContext(c *gin.Context, info *relaycommon.RelayInfo)
 	ctx["model"] = info.OriginModelName
 	ctx["upstreamModel"] = info.UpstreamModelName
 	ctx["baseUrl"] = info.ChannelBaseUrl
+	if info.ChannelMeta != nil {
+		ctx["channelType"] = info.ChannelMeta.ChannelType
+		ctx["channelId"] = info.ChannelMeta.ChannelId
+	}
 	ctx["userSetting"] = info.UserSetting
 	proxy := ""
 	proxy = info.ChannelSetting.Proxy
@@ -1439,6 +1570,35 @@ func (a *TaskAdaptor) validatedCompletionUsageFacts(facts any) (map[string]any, 
 	return validated, nil
 }
 
+func isCommonVideoSizeOrAspectRatio(text string, allowedEnum []string) bool {
+	hasSizeOrResolution := false
+	for _, e := range allowedEnum {
+		lower := strings.ToLower(e)
+		if strings.Contains(lower, "x") || strings.HasSuffix(lower, "p") || strings.HasSuffix(lower, "k") {
+			hasSizeOrResolution = true
+			break
+		}
+	}
+	if !hasSizeOrResolution {
+		return false
+	}
+
+	norm := strings.ToLower(strings.TrimSpace(text))
+	switch norm {
+	case "16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "adaptive", "auto", "horizontal", "vertical":
+		return true
+	}
+	if strings.Contains(norm, "*") {
+		norm = strings.ReplaceAll(norm, "*", "x")
+	}
+	for _, e := range allowedEnum {
+		if strings.EqualFold(e, norm) {
+			return true
+		}
+	}
+	return false
+}
+
 func validateUsageValue(value any, schema pluginruntime.UsageFieldSchema, allowNumericString bool) (float64, error) {
 	if len(schema.Enum) > 0 {
 		text, ok := value.(string)
@@ -1446,6 +1606,14 @@ func validateUsageValue(value any, schema pluginruntime.UsageFieldSchema, allowN
 			return 0, fmt.Errorf("plugin usage enum must be a string")
 		}
 		if slices.Contains(schema.Enum, text) {
+			return 0, nil
+		}
+		for _, allowed := range schema.Enum {
+			if strings.EqualFold(allowed, text) {
+				return 0, nil
+			}
+		}
+		if isCommonVideoSizeOrAspectRatio(text, schema.Enum) {
 			return 0, nil
 		}
 		return 0, fmt.Errorf("plugin usage enum is not an allowed value")

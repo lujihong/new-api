@@ -35,6 +35,28 @@ func filterPricingByUsableGroups(pricing []model.Pricing, usableGroup map[string
 	return filtered
 }
 
+// Return detached current-user-only values, never mutate shared pricing rows.
+func personalModelPricing(userID int, group string, pricing []model.Pricing, groupRatio map[string]float64) (map[string]ratio_setting.ModelDiscountSelection, map[string]map[string]float64) {
+	discounts := make(map[string]ratio_setting.ModelDiscountSelection)
+	ratios := make(map[string]map[string]float64)
+	if userID <= 0 || group == "" {
+		return discounts, ratios
+	}
+	snapshot := ratio_setting.CaptureModelDiscountRules()
+	for _, item := range pricing {
+		selection := snapshot.Lookup(userID, group, item.ModelName)
+		discounts[item.ModelName] = selection
+		values := make(map[string]float64)
+		for usingGroup, base := range groupRatio {
+			if common.StringsContains(item.EnableGroup, "all") || common.StringsContains(item.EnableGroup, usingGroup) {
+				values[usingGroup] = base * selection.Factor
+			}
+		}
+		ratios[item.ModelName] = values
+	}
+	return discounts, ratios
+}
+
 func GetPricing(c *gin.Context) {
 	pricing := model.GetPricing()
 	userId, exists := c.Get("id")
@@ -44,13 +66,16 @@ func GetPricing(c *gin.Context) {
 	var group string
 	if exists {
 		user, err := model.GetUserCache(userId.(int))
-		if err == nil {
-			group = user.Group
-			for g := range groupRatio {
-				ratio, ok := ratio_setting.GetGroupGroupRatio(group, g)
-				if ok {
-					groupRatio[g] = ratio
-				}
+		if err != nil {
+			c.Header("Cache-Control", "private, no-store")
+			c.JSON(503, gin.H{"success": false, "message": "暂时无法读取当前账号报价，请稍后重试"})
+			return
+		}
+		group = user.Group
+		for g := range groupRatio {
+			ratio, ok := ratio_setting.GetGroupGroupRatio(group, g)
+			if ok {
+				groupRatio[g] = ratio
 			}
 		}
 	}
@@ -64,7 +89,11 @@ func GetPricing(c *gin.Context) {
 		}
 	}
 
+	modelDiscounts, modelGroupRatios := personalModelPricing(c.GetInt("id"), group, pricing, groupRatio)
+	c.Header("Cache-Control", "private, no-store")
 	c.JSON(200, gin.H{
+		"model_discounts":    modelDiscounts,
+		"model_group_ratio":  modelGroupRatios,
 		"success":            true,
 		"data":               pricing,
 		"vendors":            model.GetVendors(),

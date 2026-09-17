@@ -15,7 +15,10 @@ import (
 func SetApiRouter(router *gin.Engine) {
 	apiRouter := router.Group("/api")
 	apiRouter.Use(middleware.RouteTag("api"))
-	apiRouter.Use(gzip.Gzip(gzip.DefaultCompression))
+	// Preserve upload read deadlines and binary HEAD/Range semantics.
+	apiRouter.Use(gzip.Gzip(gzip.DefaultCompression, gzip.WithExcludedPaths([]string{
+		"/api/aicc/uploads", "/api/aicc/upload-content/",
+	})))
 	apiRouter.Use(middleware.AccessTokenAudit())
 	apiRouter.Use(middleware.BodyStorageCleanup()) // 清理请求体存储
 	apiRouter.Use(middleware.GlobalAPIRateLimit())
@@ -34,6 +37,7 @@ func SetApiRouter(router *gin.Engine) {
 		//apiRouter.GET("/midjourney", controller.GetMidjourney)
 		apiRouter.GET("/home_page_content", controller.GetHomePageContent)
 		apiRouter.GET("/pricing", middleware.HeaderNavModuleAuth("pricing"), controller.GetPricing)
+		apiRouter.GET("/pricing/self", middleware.DisableCache(), middleware.TokenOrUserAuth(), controller.GetPricing)
 		perfMetricsRoute := apiRouter.Group("/perf-metrics")
 		perfMetricsRoute.Use(middleware.HeaderNavModulePublicOrUserAuth("pricing"))
 		{
@@ -208,6 +212,7 @@ func SetApiRouter(router *gin.Engine) {
 		{
 			optionRoute.GET("/", controller.GetOptions)
 			optionRoute.PUT("/", controller.UpdateOption)
+			optionRoute.GET("/model_discount_models", controller.ListModelDiscountModels)
 			optionRoute.GET("/model_pricing", controller.GetModelPricingConfig)
 			optionRoute.PATCH("/model_pricing", controller.UpdateModelPricingConfig)
 			optionRoute.POST("/payment_compliance", controller.ConfirmPaymentCompliance)
@@ -368,6 +373,41 @@ func SetApiRouter(router *gin.Engine) {
 			taskRoute.GET("/self", middleware.UserAuth(), controller.GetUserTask)
 			taskRoute.GET("", middleware.AdminAuth(), controller.GetAllTask)
 			taskRoute.GET("/:task_id/artifacts", middleware.UserAuth(), controller.GetDashboardTaskArtifacts)
+		}
+
+		apiRouter.GET("/aicc/upload-content/:id", controller.GetAICCUploadContent)
+		apiRouter.HEAD("/aicc/upload-content/:id", controller.GetAICCUploadContent)
+		apiRouter.POST("/aicc/admin/recover-group", middleware.RootAuth(), controller.RecoverAICCGroup)
+		aiccManagement := apiRouter.Group("/aicc/admin", middleware.AdminAuth(), controller.AICCManagementScope)
+		{
+			// Management never creates/authenticates resources or claims ownership on reads.
+			aiccManagement.GET("/asset-groups", controller.ListAICCAssetGroups)
+			aiccManagement.GET("/asset-groups/:id", controller.GetAICCAssetGroup)
+			aiccManagement.PUT("/asset-groups/:id", controller.UpdateAICCAssetGroup)
+			aiccManagement.DELETE("/asset-groups/:id", controller.DeleteAICCAssetGroup)
+			aiccManagement.GET("/assets", controller.QueryAICCAssets)
+			aiccManagement.GET("/assets/:id", controller.GetAICCAsset)
+			aiccManagement.PUT("/assets/:id", controller.UpdateAICCAsset)
+			aiccManagement.DELETE("/assets/:id", controller.DeleteAICCAsset)
+		}
+		aiccRoute := apiRouter.Group("/aicc")
+		aiccRoute.Use(middleware.TokenOrUserAuth())
+		{
+			aiccRoute.POST("/uploads", middleware.CriticalRateLimit(), controller.CreateAICCUpload)
+			aiccRoute.POST("/auth/session", controller.CreateAICCH5Session)
+			aiccRoute.GET("/auth/session/:token", controller.QueryAICCGroupByBytedToken)
+			aiccRoute.GET("/auth/group", controller.QueryAICCGroupByBytedToken)
+			aiccRoute.POST("/auth/group", controller.QueryAICCGroupByBytedToken)
+			aiccRoute.POST("/asset-groups", controller.CreateAICCAssetGroup)
+			aiccRoute.GET("/asset-groups", controller.ListAICCAssetGroups)
+			aiccRoute.GET("/asset-groups/:id", controller.GetAICCAssetGroup)
+			aiccRoute.PUT("/asset-groups/:id", controller.UpdateAICCAssetGroup)
+			aiccRoute.DELETE("/asset-groups/:id", controller.DeleteAICCAssetGroup)
+			aiccRoute.POST("/assets", controller.CreateAICCAsset)
+			aiccRoute.GET("/assets", controller.QueryAICCAssets)
+			aiccRoute.GET("/assets/:id", controller.GetAICCAsset)
+			aiccRoute.PUT("/assets/:id", controller.UpdateAICCAsset)
+			aiccRoute.DELETE("/assets/:id", controller.DeleteAICCAsset)
 		}
 
 		vendorRoute := apiRouter.Group("/vendors")

@@ -5,5 +5,8 @@
   "Please try opening in a new tab or check network connectivity": "请尝试在新标签页中打开或检查网络连接",
   "Generation Failed · View Details": "生成失败 · 查看原因",
   "Sign out": "退出",
-  "Signed out": "已退出"
+  "Signed out": "已退出",
+  "Delete model pricing": "删除模型定价",
+  "Are you sure you want to delete the pricing for {{name}}? It will be removed from configured models.": "确定要删除模型「{{name}}」的价格配置吗？删除后将从已配置列表中移除。",
+  "Model pricing deleted successfully": "模型定价已成功删除"
 }

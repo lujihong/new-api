@@ -27,6 +27,7 @@ type TokenParams struct {
 	ImgO float64 // image output tokens
 	AI   float64 // audio input tokens
 	AO   float64 // audio output tokens
+	VS   float64 // video duration in seconds
 }
 
 // RequestRuleTrace describes one request-dependent multiplier detected at compile time.

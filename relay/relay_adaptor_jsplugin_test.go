@@ -27,6 +27,10 @@ func TestGetTaskAdaptorMapsMigratedPlatformsToFactoryPlugins(t *testing.T) {
 		constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeVidu)),
 		constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeSora)),
 		constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeOpenAI)),
+		constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeNewAPI)),
+		constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeSub2API)),
+		constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeCustom)),
+		constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeAdvancedCustom)),
 		constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeVertexAi)),
 	}
 	for _, platform := range platforms {

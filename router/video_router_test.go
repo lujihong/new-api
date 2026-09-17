@@ -127,8 +127,8 @@ func TestGetOpenAIVideoRouteRendersJimengTask(t *testing.T) {
 		query         string
 		wantStatus    int
 	}{
-		{name: "missing credential rejected", wantStatus: http.StatusUnauthorized},
-		{name: "access rejected", query: "?access=not-a-video-credential", wantStatus: http.StatusUnauthorized},
+		{name: "anonymous direct link accepted", wantStatus: http.StatusOK},
+		{name: "legacy access query is ignored", query: "?access=not-a-video-credential", wantStatus: http.StatusOK},
 		{name: "bearer accepted", authorization: "Bearer sk-jimengfetch", wantStatus: http.StatusOK},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {

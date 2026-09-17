@@ -155,6 +155,7 @@ func InitOptionMap() {
 	common.OptionMap["CreateCacheRatio"] = ratio_setting.CreateCacheRatio2JSONString()
 	common.OptionMap["GroupRatio"] = ratio_setting.GroupRatio2JSONString()
 	common.OptionMap["GroupGroupRatio"] = ratio_setting.GroupGroupRatio2JSONString()
+	common.OptionMap[ModelDiscountOptionKey] = ratio_setting.ModelDiscountRulesJSONString()
 	common.OptionMap["UserUsableGroups"] = setting.UserUsableGroups2JSONString()
 	common.OptionMap["CompletionRatio"] = ratio_setting.CompletionRatio2JSONString()
 	common.OptionMap["ImageRatio"] = ratio_setting.ImageRatio2JSONString()
@@ -195,6 +196,8 @@ func InitOptionMap() {
 }
 
 func loadOptionsFromDatabase() {
+	modelDiscountOptionMu.Lock()
+	defer modelDiscountOptionMu.Unlock()
 	options, _ := AllOption()
 	for _, option := range options {
 		err := updateOptionMap(option.Key, option.Value)
@@ -213,6 +216,9 @@ func SyncOptions(frequency int) {
 }
 
 func validateOptionValue(key string, value string) error {
+	if key == ModelDiscountOptionKey {
+		return ValidateModelDiscountReferences(value)
+	}
 	if key == operation_setting.ToolPriceOptionKey {
 		return operation_setting.ValidateToolPricesJSON(value)
 	}
@@ -226,6 +232,9 @@ func validateOptionValue(key string, value string) error {
 }
 
 func UpdateOption(key string, value string) error {
+	if key == ModelDiscountOptionKey {
+		return UpdateOptionsBulk(map[string]string{key: value})
+	}
 	if IsModelPricingOption(key) {
 		return UpdateModelPricingOptions(map[string]string{key: value})
 	}
@@ -253,6 +262,10 @@ func UpdateOption(key string, value string) error {
 // is touched — safe for callers that must commit a set of related options
 // atomically (e.g. payment gateway binding).
 func UpdateOptionsBulk(values map[string]string) error {
+	if _, changesDiscount := values[ModelDiscountOptionKey]; changesDiscount {
+		modelDiscountOptionMu.Lock()
+		defer modelDiscountOptionMu.Unlock()
+	}
 	if len(values) == 0 {
 		return nil
 	}
@@ -286,6 +299,16 @@ func UpdateOptionsBulk(values map[string]string) error {
 }
 
 func updateOptionMap(key string, value string) (err error) {
+	if key == ModelDiscountOptionKey {
+		// Validate first so a malformed saved value never replaces the last good rules.
+		common.OptionMapRWMutex.Lock()
+		defer common.OptionMapRWMutex.Unlock()
+		if err := ratio_setting.UpdateModelDiscountRulesJSON(value); err != nil {
+			return err
+		}
+		common.OptionMap[key] = ratio_setting.ModelDiscountRulesJSONString()
+		return nil
+	}
 	if key == retiredThemeOptionKey {
 		common.OptionMapRWMutex.Lock()
 		delete(common.OptionMap, key)

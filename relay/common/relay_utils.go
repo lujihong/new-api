@@ -184,6 +184,11 @@ func validateMultipartTaskRequest(c *gin.Context, info *RelayInfo, action string
 
 	for key, values := range formData {
 		if len(values) > 0 && !isKnownTaskField(key) {
+			// Repeated media references are ordered inputs, not scalar metadata.
+			if key == "input_reference[]" || key == "video_reference[]" || key == "audio_reference[]" {
+				req.Metadata[key] = append([]string(nil), values...)
+				continue
+			}
 			if intVal, err := strconv.Atoi(values[0]); err == nil {
 				req.Metadata[key] = intVal
 			} else if floatVal, err := strconv.ParseFloat(values[0], 64); err == nil {

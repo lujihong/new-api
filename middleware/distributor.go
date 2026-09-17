@@ -233,6 +233,10 @@ func channelMatchesExpectedTaskPlugin(c *gin.Context, channel *model.Channel, ex
 	if expected == "" {
 		return true
 	}
+	if channel.Type == constant.ChannelTypeNewAPI || channel.Type == constant.ChannelTypeSub2API ||
+		channel.Type == constant.ChannelTypeCustom || channel.Type == constant.ChannelTypeAdvancedCustom {
+		return true
+	}
 
 	if c == nil {
 		return false
@@ -270,6 +274,15 @@ func pinnedEndpointCandidateForChannel(c *gin.Context, channel *model.Channel, e
 		}
 		if channel.Type == constant.ChannelTypeTaskPlugin {
 			if channel.GetSetting().TaskPluginKey == candidate.Plugin.Meta.Key {
+				selected = candidate
+			}
+			continue
+		}
+		if channel.Type == constant.ChannelTypeNewAPI || channel.Type == constant.ChannelTypeSub2API ||
+			channel.Type == constant.ChannelTypeCustom || channel.Type == constant.ChannelTypeAdvancedCustom {
+			if candidate.Plugin.Meta.Key == expected {
+				selected = candidate
+			} else if selected.Plugin == nil {
 				selected = candidate
 			}
 			continue
@@ -656,28 +669,30 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 			types.ErrOptionWithSkipRetry(),
 		)
 	}
-	if candidate, matched := pinnedEndpointCandidateForChannel(c, channel, expectedPlugin); matched {
-		if value, exists := c.Get(jsplugin.ContextKeyPinnedEndpoint); exists {
-			if pinned, ok := value.(jsplugin.PinnedEndpoint); ok && candidate.Plugin != nil && candidate.Plugin != pinned.Plugin {
-				previousPlugin := pinned.Plugin.Meta.Key
-				pinned.Plugin = candidate.Plugin
-				pinned.Protocol = candidate.Protocol
-				pinned.Operation = candidate.Operation
-				c.Set(jsplugin.ContextKeyPinnedEndpoint, pinned)
-				c.Set(jsplugin.ContextKeyPinnedPlugin, jsplugin.PinnedPlugin{Generation: pinned.Generation, Plugin: candidate.Plugin})
-				c.Set("expected_task_plugin_key", candidate.Plugin.Meta.Key)
-				c.Set("task_plugin_key", candidate.Plugin.Meta.Key)
-				c.Set("platform", candidate.Plugin.Meta.Key)
-				logger.LogDebug(
-					c,
-					"task_plugin subsystem=endpoint event=provider_selected generation=%d previous_plugin=%q plugin=%q model=%q channel_id=%d channel_type=%d",
-					pinned.Generation.Number,
-					previousPlugin,
-					candidate.Plugin.Meta.Key,
-					modelName,
-					channel.Id,
-					channel.Type,
-				)
+	if !constant.IsGenericRelayChannelType(channel.Type) {
+		if candidate, matched := pinnedEndpointCandidateForChannel(c, channel, expectedPlugin); matched {
+			if value, exists := c.Get(jsplugin.ContextKeyPinnedEndpoint); exists {
+				if pinned, ok := value.(jsplugin.PinnedEndpoint); ok && candidate.Plugin != nil && candidate.Plugin != pinned.Plugin {
+					previousPlugin := pinned.Plugin.Meta.Key
+					pinned.Plugin = candidate.Plugin
+					pinned.Protocol = candidate.Protocol
+					pinned.Operation = candidate.Operation
+					c.Set(jsplugin.ContextKeyPinnedEndpoint, pinned)
+					c.Set(jsplugin.ContextKeyPinnedPlugin, jsplugin.PinnedPlugin{Generation: pinned.Generation, Plugin: candidate.Plugin})
+					c.Set("expected_task_plugin_key", candidate.Plugin.Meta.Key)
+					c.Set("task_plugin_key", candidate.Plugin.Meta.Key)
+					c.Set("platform", candidate.Plugin.Meta.Key)
+					logger.LogDebug(
+						c,
+						"task_plugin subsystem=endpoint event=provider_selected generation=%d previous_plugin=%q plugin=%q model=%q channel_id=%d channel_type=%d",
+						pinned.Generation.Number,
+						previousPlugin,
+						candidate.Plugin.Meta.Key,
+						modelName,
+						channel.Id,
+						channel.Type,
+					)
+				}
 			}
 		}
 	}

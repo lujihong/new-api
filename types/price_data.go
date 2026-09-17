@@ -8,9 +8,27 @@ import (
 )
 
 type GroupRatioInfo struct {
-	GroupRatio        float64
+	GroupRatio        float64 // Final billing ratio, including the model discount.
 	GroupSpecialRatio float64
 	HasSpecialRatio   bool
+
+	BaseGroupRatio        float64
+	ModelDiscount         float64
+	ModelDiscountSource   string
+	ModelDiscountRevision string
+	ModelDiscountModel    string
+	// HasModelDiscount marks resolved metadata, including default factor 1.
+	// Without it, zero-valued new fields in legacy structs mean no discount.
+	HasModelDiscount bool
+}
+
+// UndiscountedGroupRatio preserves the original group policy for non-commercial
+// charges such as violation fees. Zero is a valid base ratio and discount.
+func (g GroupRatioInfo) UndiscountedGroupRatio() float64 {
+	if g.HasModelDiscount {
+		return g.BaseGroupRatio
+	}
+	return g.GroupRatio
 }
 
 type PriceData struct {

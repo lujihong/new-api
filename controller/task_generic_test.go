@@ -286,6 +286,88 @@ func TestLegacyVideoArtifactContentUsesGetResultURL(t *testing.T) {
 	assert.Equal(t, "bytes 0-3/4", recorder.Header().Get("Content-Range"))
 }
 
+func TestLegacyVideoArtifactContentUsesResultURLWithChannelKey(t *testing.T) {
+	task := setupGenericTaskTest(t)
+	var capturedAuth string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "video/mp4")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("video-stream"))
+	}))
+	defer upstream.Close()
+	allowPrivateTaskMediaTest(t)
+
+	require.NoError(t, model.DB.Model(&model.Channel{}).Where("id = ?", task.ChannelId).Updates(map[string]any{
+		"base_url": upstream.URL,
+		"key":      "upstream-secret-key",
+	}).Error)
+
+	task.Action = constant.TaskActionTextToVideo
+	task.PrivateData.ResultURL = upstream.URL + "/v1/videos/upstream_task_1/content"
+	require.NoError(t, model.DB.Save(task).Error)
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Set(middleware.TaskArtifactAccessContextKey, true)
+	c.Params = gin.Params{
+		{Key: "key", Value: task.TaskID},
+		{Key: "artifact_key", Value: "video"},
+	}
+	c.Request = httptest.NewRequest(
+		http.MethodGet,
+		"/v1/tasks/"+task.TaskID+"/artifacts/video/content",
+		nil,
+	)
+
+	TaskArtifactContent(c)
+
+	assert.Equal(t, http.StatusOK, recorder.Code)
+	assert.Equal(t, "video-stream", recorder.Body.String())
+	assert.Equal(t, "Bearer upstream-secret-key", capturedAuth)
+}
+
+func TestLegacyVideoArtifactContentUsesExternalCDNWithoutChannelKey(t *testing.T) {
+	task := setupGenericTaskTest(t)
+	var capturedAuth string
+	cdnServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "video/mp4")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("cdn-video-stream"))
+	}))
+	defer cdnServer.Close()
+	allowPrivateTaskMediaTest(t)
+
+	require.NoError(t, model.DB.Model(&model.Channel{}).Where("id = ?", task.ChannelId).Updates(map[string]any{
+		"base_url": "https://upstream.example.com",
+		"key":      "upstream-secret-key",
+	}).Error)
+
+	task.Action = constant.TaskActionTextToVideo
+	task.PrivateData.ResultURL = cdnServer.URL + "/media/signed-video.mp4?token=sig"
+	require.NoError(t, model.DB.Save(task).Error)
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Set(middleware.TaskArtifactAccessContextKey, true)
+	c.Params = gin.Params{
+		{Key: "key", Value: task.TaskID},
+		{Key: "artifact_key", Value: "video"},
+	}
+	c.Request = httptest.NewRequest(
+		http.MethodGet,
+		"/v1/tasks/"+task.TaskID+"/artifacts/video/content",
+		nil,
+	)
+
+	TaskArtifactContent(c)
+
+	assert.Equal(t, http.StatusOK, recorder.Code)
+	assert.Equal(t, "cdn-video-stream", recorder.Body.String())
+	assert.Empty(t, capturedAuth)
+}
+
 func TestDisabledArtifactStorePreservesPluginUpstreamContent(t *testing.T) {
 	task := setupGenericTaskTest(t)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

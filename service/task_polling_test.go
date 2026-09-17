@@ -261,6 +261,7 @@ func TestUpdateBatchTasksSettlesTieredUsageForTerminalStates(t *testing.T) {
 		actualQuota int
 	}{
 		{name: "success with usage", status: model.TaskStatusSuccess, units: 3, actualQuota: 3_000},
+		{name: "success with equal quota", status: model.TaskStatusSuccess, units: 5, actualQuota: 5_000},
 		{name: "failure with usage", status: model.TaskStatusFailure, units: 3, actualQuota: 0},
 		{name: "success with zero usage", status: model.TaskStatusSuccess, units: 0, actualQuota: 0},
 		{name: "failure with zero usage", status: model.TaskStatusFailure, units: 0, actualQuota: 0},
@@ -316,9 +317,17 @@ func TestUpdateBatchTasksSettlesTieredUsageForTerminalStates(t *testing.T) {
 			var persistedData map[string]any
 			require.NoError(t, common.Unmarshal(persisted.Data, &persistedData))
 			assert.Equal(t, "must-be-preserved", persistedData["provider_payload"])
+			if testCase.status == model.TaskStatusSuccess {
+				assert.Equal(t, testCase.units, persisted.PrivateData.BillingContext.TieredSnapshot.UsageFacts["units"])
+				assert.Equal(t, "actual", persisted.PrivateData.BillingContext.TieredSnapshot.EstimatedTier)
+			}
 			assert.Equal(t, initialQuota+(preConsumedQuota-testCase.actualQuota), getUserQuota(t, userID))
 			assert.Equal(t, tokenRemain+(preConsumedQuota-testCase.actualQuota), getTokenRemainQuota(t, tokenID))
-			assert.Equal(t, int64(1), countLogs(t))
+			wantLogs := int64(1)
+			if testCase.actualQuota == preConsumedQuota {
+				wantLogs = 0
+			}
+			assert.Equal(t, wantLogs, countLogs(t))
 			if testCase.status == model.TaskStatusFailure {
 				log := getLastLog(t)
 				require.NotNil(t, log)
@@ -328,7 +337,7 @@ func TestUpdateBatchTasksSettlesTieredUsageForTerminalStates(t *testing.T) {
 			// A duplicate terminal response must not settle the same task twice.
 			require.NoError(t, UpdateBatchTasks(context.Background(), adaptor, map[int][]string{channelID: taskIDs}, taskMap))
 			assert.Equal(t, initialQuota+(preConsumedQuota-testCase.actualQuota), getUserQuota(t, userID))
-			assert.Equal(t, int64(1), countLogs(t))
+			assert.Equal(t, wantLogs, countLogs(t))
 		})
 	}
 }
@@ -778,6 +787,127 @@ func (a *scriptedBatchPollingAdaptor) ParseBatchResult([]*model.Task, *http.Resp
 		return nil, a.parseErr
 	}
 	return a.results, nil
+}
+
+func TestTaskPollingSettlementUsesPreparedResultWithoutReevaluation(t *testing.T) {
+	truncate(t)
+	seedUser(t, 711, 10000)
+	seedChannel(t, 711)
+	task := makeTask(711, 711, 5000, 0, BillingSourceWallet, 0)
+	task.Status = model.TaskStatusSuccess
+	task.PrivateData.BillingContext.TieredSnapshot = &billingexpr.BillingSnapshot{ExprString: `tier("original", u("units"))`, GroupRatio: 1, QuotaPerUnit: 1000, ExprVersion: 1, TaskUsageBilling: true}
+	info := &relaycommon.TaskInfo{UsageFacts: map[string]any{"units": float64(3)}}
+	result, err := prepareTaskTieredUsage(task, info)
+	require.NoError(t, err)
+	require.NoError(t, model.DB.Create(task).Error)
+	// Change both the expression and inputs after preparation: settlement must
+	// consume exactly the persisted decision, not the time-dependent next value.
+	task.PrivateData.BillingContext.TieredSnapshot.ExprString = `tier(`
+	info.UsageFacts["units"] = float64(9)
+	require.True(t, settleTaskBillingOnCompletePrepared(context.Background(), &scriptedPollingAdaptor{}, task, info, &preparedTieredSettlement{result: result}))
+	require.Equal(t, 3000, getTaskQuota(t, task.ID))
+	require.Equal(t, 12000, getUserQuota(t, 711))
+}
+
+func TestTaskPollingTieredUsageFactsPersistWithTerminalCAS(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		status      model.TaskStatus
+		units       float64
+		actualQuota int
+		invalidExpr bool
+		loseCAS     bool
+	}{
+		{name: "equal quota", status: model.TaskStatusSuccess, units: 5, actualQuota: 5_000},
+		{name: "additional charge", status: model.TaskStatusSuccess, units: 7, actualQuota: 7_000},
+		{name: "partial refund", status: model.TaskStatusSuccess, units: 3, actualQuota: 3_000},
+		{name: "expression error retains facts", status: model.TaskStatusSuccess, units: 7, actualQuota: 5_000, invalidExpr: true},
+		{name: "failure keeps estimate and fully refunds", status: model.TaskStatusFailure, units: 7, actualQuota: 0},
+		{name: "CAS loser cannot overwrite or charge", status: model.TaskStatusSuccess, units: 7, actualQuota: 5_000, loseCAS: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			truncate(t)
+			const userID, tokenID, channelID = 710, 710, 710
+			const initialQuota, tokenRemain, preConsumed = 10_000, 8_000, 5_000
+			seedUser(t, userID, initialQuota)
+			seedToken(t, tokenID, userID, "sk-poll-snapshot", tokenRemain)
+			seedTaskPollingChannel(t, channelID, true)
+			var ch model.Channel
+			require.NoError(t, model.DB.First(&ch, channelID).Error)
+
+			expression := `tier("actual", u("units"))`
+			if tc.invalidExpr {
+				expression = `tier(`
+			}
+			task := makeTask(userID, channelID, preConsumed, tokenID, BillingSourceWallet, 0)
+			task.TaskID = "task_poll_usage_snapshot"
+			task.PrivateData.UpstreamTaskID = "upstream_poll_usage_snapshot"
+			originalFacts := map[string]any{"units": float64(1), "resolution": "720p"}
+			task.PrivateData.BillingContext.TieredSnapshot = &billingexpr.BillingSnapshot{
+				ExprString: expression, ExprHash: billingexpr.ExprHashString(expression),
+				GroupRatio: 1, QuotaPerUnit: 1_000, ExprVersion: 1, TaskUsageBilling: true,
+				UsageFacts: originalFacts, EstimatedTier: "estimate",
+			}
+			sharedContext := task.PrivateData.BillingContext
+			sharedSnapshot := sharedContext.TieredSnapshot
+			require.NoError(t, model.DB.Create(task).Error)
+
+			if tc.loseCAS {
+				// A different poll already won the terminal transition. This poll is stale.
+				var winner model.Task
+				require.NoError(t, model.DB.First(&winner, task.ID).Error)
+				winner.Status = model.TaskStatusSuccess
+				winner.PrivateData.BillingContext.TieredSnapshot.UsageFacts = map[string]any{"winner": true}
+				winner.PrivateData.BillingContext.TieredSnapshot.EstimatedTier = "winner"
+				won, err := winner.UpdateWithStatus(model.TaskStatusInProgress)
+				require.NoError(t, err)
+				require.True(t, won)
+			}
+
+			resultFacts := map[string]any{"units": tc.units, "provider": "actual"}
+			adaptor := &scriptedPollingAdaptor{parse: &relaycommon.TaskInfo{
+				Status: string(tc.status), Reason: "upstream failed", UsageFacts: resultFacts,
+			}}
+			require.NoError(t, updateVideoSingleTask(context.Background(), adaptor, &ch, task.GetUpstreamTaskID(), map[string]*model.Task{
+				task.GetUpstreamTaskID(): task,
+			}))
+
+			var persisted model.Task
+			require.NoError(t, model.DB.First(&persisted, task.ID).Error)
+			assert.Equal(t, tc.status, persisted.Status)
+			assert.Equal(t, tc.actualQuota, persisted.Quota)
+			assert.Equal(t, initialQuota+preConsumed-tc.actualQuota, getUserQuota(t, userID))
+			assert.Equal(t, tokenRemain+preConsumed-tc.actualQuota, getTokenRemainQuota(t, tokenID))
+			snapshot := persisted.PrivateData.BillingContext.TieredSnapshot
+			require.NotNil(t, snapshot)
+			switch {
+			case tc.loseCAS:
+				assert.Equal(t, map[string]any{"winner": true}, snapshot.UsageFacts)
+				assert.Equal(t, "winner", snapshot.EstimatedTier)
+			case tc.status == model.TaskStatusFailure:
+				assert.Equal(t, originalFacts, snapshot.UsageFacts)
+				assert.Equal(t, "estimate", snapshot.EstimatedTier)
+			default:
+				assert.Equal(t, map[string]any{"units": tc.units, "resolution": "720p", "provider": "actual"}, snapshot.UsageFacts)
+				if tc.invalidExpr {
+					assert.Equal(t, "estimate", snapshot.EstimatedTier)
+				} else {
+					assert.Equal(t, "actual", snapshot.EstimatedTier)
+				}
+			}
+			if tc.actualQuota == preConsumed {
+				assert.Zero(t, countLogs(t), "no charge/refund or false settlement log")
+			} else {
+				assert.Equal(t, int64(1), countLogs(t))
+			}
+			// Snapshot preparation must not mutate objects shared by another poll.
+			assert.Same(t, sharedSnapshot, sharedContext.TieredSnapshot)
+			assert.Equal(t, "estimate", sharedSnapshot.EstimatedTier)
+			assert.Equal(t, map[string]any{"units": float64(1), "resolution": "720p"}, sharedSnapshot.UsageFacts)
+			assert.Equal(t, map[string]any{"units": float64(1), "resolution": "720p"}, originalFacts)
+			assert.Equal(t, map[string]any{"units": tc.units, "provider": "actual"}, resultFacts)
+		})
+	}
 }
 
 func TestUpdateVideoSingleTaskPollClassification(t *testing.T) {

@@ -226,3 +226,12 @@ var ChannelSpecialBases = map[string]ChannelSpecialBase{
 		OpenAIBaseURL: "https://ark.cn-beijing.volces.com/api/coding/v3",
 	},
 }
+
+func IsGenericRelayChannelType(channelType int) bool {
+	switch channelType {
+	case ChannelTypeNewAPI, ChannelTypeSub2API, ChannelTypeCustom, ChannelTypeAdvancedCustom:
+		return true
+	default:
+		return false
+	}
+}

@@ -102,4 +102,5 @@ func TestSmokeTestExprRejectsTaskUsageWithoutSchema(t *testing.T) {
 	assert.ErrorContains(t, err, "no task plugin usage schema")
 
 	require.NoError(t, SmokeTestExpr(`tier("base", p * 2 + c * 8)`))
+	require.NoError(t, SmokeTestExpr(`(has(param("resolution"), "720") || has(param("resolution"), "1080")) ? tier("720p", (vs == 0 ? 6 : vs) * 0.11) : tier("480p", (vs == 0 ? 6 : vs) * 0.08)`))
 }

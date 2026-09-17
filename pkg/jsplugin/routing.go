@@ -346,6 +346,7 @@ var (
 var reservedRouteNamespaces = []string{
 	"/api",
 	"/assets",
+	"/static",
 	"/setup",
 	"/v1/tasks",
 	"/console",

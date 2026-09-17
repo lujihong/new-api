@@ -17,6 +17,7 @@ import (
 	kitreasoning "github.com/QuantumNous/new-api/relaykit/relayconvert/reasoning"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/setting/model_setting"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	hosttypes "github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-gonic/gin"
@@ -166,6 +167,12 @@ type RelayInfo struct {
 
 	PriceData hosttypes.PriceData
 
+	// ModelDiscountSnapshot is captured on first group pricing, after request
+	// identity is known, and survives InitChannelMeta and all channel retries.
+	// Pricing initializes it before realtime workers start; the snapshot itself
+	// is immutable and may be read concurrently. Never serialize all rules.
+	ModelDiscountSnapshot *ratio_setting.ModelDiscountSnapshot `json:"-"`
+
 	// QuotaClamp is set (non-nil) when a quota conversion saturated at the
 	// supported single-request bound (or NaN fallback) while computing this request's charge.
 	// It is surfaced onto the consume/task log's admin_info for auditing.
@@ -202,6 +209,32 @@ type RelayInfo struct {
 	*ResponsesUsageInfo
 	*ChannelMeta
 	*TaskRelayInfo
+}
+
+// ResolveGroupRatio recomputes the base for the currently selected routing group.
+// The discount belongs to the user's group and exact client model, not the
+// routing group or billing alias. Calling this again never compounds a discount.
+func (info *RelayInfo) ResolveGroupRatio() hosttypes.GroupRatioInfo {
+	if info.ModelDiscountSnapshot == nil {
+		info.ModelDiscountSnapshot = ratio_setting.CaptureModelDiscountRules()
+	}
+	group := hosttypes.GroupRatioInfo{GroupSpecialRatio: -1}
+	if ratio, ok := ratio_setting.GetGroupGroupRatio(info.UserGroup, info.UsingGroup); ok {
+		group.GroupRatio = ratio
+		group.GroupSpecialRatio = ratio
+		group.HasSpecialRatio = true
+	} else {
+		group.GroupRatio = ratio_setting.GetGroupRatio(info.UsingGroup)
+	}
+	selection := info.ModelDiscountSnapshot.Lookup(info.UserId, info.UserGroup, info.OriginModelName)
+	group.BaseGroupRatio = group.GroupRatio
+	group.ModelDiscount = selection.Factor
+	group.ModelDiscountSource = selection.Source
+	group.ModelDiscountRevision = selection.Revision
+	group.ModelDiscountModel = selection.Model
+	group.HasModelDiscount = true
+	group.GroupRatio = group.BaseGroupRatio * selection.Factor
+	return group
 }
 
 func (info *RelayInfo) InitChannelMeta(c *gin.Context) {
@@ -940,6 +973,10 @@ type TaskRelayInfo struct {
 type ContentItemReq struct {
 	Type     string `json:"type"`
 	Text     string `json:"text,omitempty"`
+	Role     string `json:"role,omitempty"`
+	AudioURL *struct {
+		URL string `json:"url"`
+	} `json:"audio_url,omitempty"`
 	ImageURL *struct {
 		URL string `json:"url"`
 	} `json:"image_url,omitempty"`
@@ -949,17 +986,24 @@ type ContentItemReq struct {
 }
 
 type TaskSubmitReq struct {
-	Prompt         string           `json:"prompt"`
-	Content        []ContentItemReq `json:"content,omitempty"`
-	Model          string           `json:"model,omitempty"`
-	Mode           string           `json:"mode,omitempty"`
-	Image          string           `json:"image,omitempty"`
-	Images         []string         `json:"images,omitempty"`
-	Size           string           `json:"size,omitempty"`
-	Duration       int              `json:"duration,omitempty"`
-	Seconds        string           `json:"seconds,omitempty"`
-	InputReference string           `json:"input_reference,omitempty"`
-	Metadata       map[string]any   `json:"metadata,omitempty"`
+	Prompt          string           `json:"prompt"`
+	Content         []ContentItemReq `json:"content,omitempty"`
+	Model           string           `json:"model,omitempty"`
+	Mode            string           `json:"mode,omitempty"`
+	Image           string           `json:"image,omitempty"`
+	Images          []string         `json:"images,omitempty"`
+	Size            string           `json:"size,omitempty"`
+	Duration        int              `json:"duration,omitempty"`
+	Seconds         string           `json:"seconds,omitempty"`
+	InputReference  string           `json:"input_reference,omitempty"`
+	Metadata        map[string]any   `json:"metadata,omitempty"`
+	Resolution      *string          `json:"resolution,omitempty"`
+	GenerateAudio   *bool            `json:"generate_audio,omitempty"`
+	Seed            *int64           `json:"seed,omitempty"`
+	Ratio           *string          `json:"ratio,omitempty"`
+	Watermark       *bool            `json:"watermark,omitempty"`
+	ReturnLastFrame *bool            `json:"return_last_frame,omitempty"`
+	CameraFixed     *bool            `json:"camera_fixed,omitempty"`
 }
 
 func (t *TaskSubmitReq) GetPrompt() string {

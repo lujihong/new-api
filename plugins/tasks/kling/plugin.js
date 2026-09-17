@@ -7,10 +7,16 @@ export const meta = {
     en: "Kuaishou Kling video generation (text-to-video and image-to-video)",
     zh: "快手可灵视频生成（文生视频、图生视频）",
   },
-  version: "1.0.2",
+  version: "1.0.3",
   author: { name: "QuantumNous" },
   channelTypes: [50],
-  models: ["kling-v1", "kling-v1-6", "kling-v2-master"],
+  models: [
+    "kling-v1",
+    "kling-v1-6",
+    "kling-v2-master",
+    "kling-3.0",
+    "kling-3.0-pro",
+  ],
   fetchMode: "per_task",
   usageSchema: {
     // Kling final unit deduction (estimated at submit, actual on completion).

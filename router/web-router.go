@@ -19,6 +19,29 @@ type WebAssets struct {
 	IndexPage []byte
 }
 
+func isStaticAssetPath(path string) bool {
+	if path == "/static" || path == "/assets" ||
+		strings.HasPrefix(path, "/static/") ||
+		strings.HasPrefix(path, "/assets/") ||
+		strings.HasPrefix(path, "/favicon") ||
+		strings.HasPrefix(path, "/logo") ||
+		strings.HasPrefix(path, "/apple-touch-icon") ||
+		strings.HasPrefix(path, "/android-chrome") {
+		return true
+	}
+
+	dot := strings.LastIndex(path, ".")
+	if dot < 0 {
+		return false
+	}
+	switch strings.ToLower(path[dot:]) {
+	case ".js", ".mjs", ".css", ".map", ".json", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp", ".woff", ".woff2", ".ttf", ".eot":
+		return true
+	default:
+		return false
+	}
+}
+
 func SetWebRouter(router *gin.Engine, assets WebAssets, pluginDispatcher gin.HandlerFunc) {
 	frontendFS := common.EmbedFolder(assets.BuildFS, "web/dist")
 
@@ -27,11 +50,21 @@ func SetWebRouter(router *gin.Engine, assets WebAssets, pluginDispatcher gin.Han
 		middleware.RouteTag("web"),
 		gzip.Gzip(gzip.DefaultCompression),
 		middleware.Cache(),
+		func(c *gin.Context) {
+			if c.Request.URL.Path == "/static" || c.Request.URL.Path == "/assets" {
+				controller.RelayNotFound(c)
+				c.Abort()
+				return
+			}
+			c.Next()
+		},
 		static.Serve("/", frontendFS),
 		middleware.AccessTokenAudit(),
 		middleware.GlobalWebRateLimit(),
 		func(c *gin.Context) {
-			if strings.HasPrefix(c.Request.RequestURI, "/v1") || strings.HasPrefix(c.Request.RequestURI, "/api") || strings.HasPrefix(c.Request.RequestURI, "/assets") {
+			if strings.HasPrefix(c.Request.URL.Path, "/v1") ||
+				strings.HasPrefix(c.Request.URL.Path, "/api") ||
+				isStaticAssetPath(c.Request.URL.Path) {
 				controller.RelayNotFound(c)
 				return
 			}

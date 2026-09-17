@@ -20,7 +20,7 @@ import { formatBillingCurrencyFromUSD } from '@/lib/currency'
 
 import { QUOTA_TYPE_VALUES, TOKEN_UNIT_DIVISORS } from '../constants'
 import type { PricingModel, TokenUnit, PriceType } from '../types'
-import { getConfiguredGroupRatio, getDisplayGroupRatio } from './model-helpers'
+import { getModelGroupRatio, getDisplayGroupRatio } from './model-helpers'
 
 // ----------------------------------------------------------------------------
 // Price Calculation Utilities
@@ -191,7 +191,7 @@ export function formatGroupPrice(
     return '-'
   }
 
-  const ratio = getConfiguredGroupRatio(groupRatio, group)
+  const ratio = getModelGroupRatio(model, group, groupRatio)
   let priceInUSD = calculateTokenPrice(model, type, ratio)
 
   priceInUSD = applyRechargeRate(
@@ -224,17 +224,8 @@ export function formatFixedPrice(
     return '-'
   }
 
-  const ratio = getConfiguredGroupRatio(groupRatio, group)
+  const ratio = getModelGroupRatio(model, group, groupRatio)
   const basePrice = (model.model_price || 0) * ratio
-
-  const { config } = getCurrencyDisplay()
-  if (config.quotaDisplayType === 'CNY') {
-    return formatLocalCurrencyAmount(basePrice, {
-      digitsLarge: 2,
-      digitsSmall: 4,
-      abbreviate: false,
-    })
-  }
 
   let priceInUSD = basePrice
   priceInUSD = applyRechargeRate(
@@ -268,15 +259,6 @@ export function formatRequestPrice(
 
   const displayGroupRatio = getDisplayGroupRatio(model, selectedGroup)
   const basePrice = (model.model_price || 0) * displayGroupRatio
-
-  const { config } = getCurrencyDisplay()
-  if (config.quotaDisplayType === 'CNY') {
-    return formatLocalCurrencyAmount(basePrice, {
-      digitsLarge: 2,
-      digitsSmall: 4,
-      abbreviate: false,
-    })
-  }
 
   let priceInUSD = basePrice
   priceInUSD = applyRechargeRate(

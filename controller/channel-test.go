@@ -35,10 +35,14 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+const channelTestUnsupportedCode = "channel_test_unsupported"
+
 type testResult struct {
-	context     *gin.Context
-	localErr    error
-	newAPIError *types.NewAPIError
+	context           *gin.Context
+	localErr          error
+	newAPIError       *types.NewAPIError
+	skipped           bool
+	upstreamAttempted bool
 }
 
 func normalizeChannelTestEndpoint(channel *model.Channel, endpointType string) string {
@@ -69,7 +73,9 @@ func resolveChannelTestUserID(c *gin.Context) (int, error) {
 	return rootUser.Id, nil
 }
 
-func testChannel(ctx context.Context, channel *model.Channel, testUserID int, testModel string, endpointType string, isStream bool) testResult {
+func testChannel(ctx context.Context, channel *model.Channel, testUserID int, testModel string, endpointType string, isStream bool) (result testResult) {
+	upstreamAttempted := false
+	defer func() { result.upstreamAttempted = upstreamAttempted }()
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -87,7 +93,8 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 	if lo.Contains(unsupportedTestChannelTypes, channel.Type) {
 		channelTypeName := constant.GetChannelTypeName(channel.Type)
 		return testResult{
-			localErr: fmt.Errorf("%s channel test is not supported", channelTypeName),
+			skipped:  true,
+			localErr: fmt.Errorf("%s 使用异步任务接口，本次未执行通用测试，未请求上游、未发起生成。请通过对应生成流程验证实际可用性，真实生成可能产生费用", channelTypeName),
 		}
 	}
 	w := httptest.NewRecorder()
@@ -433,6 +440,7 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 
 	requestBody := bytes.NewBuffer(jsonData)
 	c.Request.Body = io.NopCloser(bytes.NewBuffer(jsonData))
+	upstreamAttempted = true
 	resp, err := adaptor.DoRequest(c, info, requestBody)
 	if err != nil {
 		return testResult{
@@ -479,8 +487,8 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 			newAPIError: types.NewOpenAIError(usageErr, types.ErrorCodeBadResponseBody, http.StatusInternalServerError),
 		}
 	}
-	result := w.Result()
-	respBody, err := readTestResponseBody(result.Body, isStream)
+	recordedResponse := w.Result()
+	respBody, err := readTestResponseBody(recordedResponse.Body, isStream)
 	if err != nil {
 		return testResult{
 			context:     c,
@@ -875,6 +883,15 @@ func TestChannel(c *gin.Context) {
 		requestCtx = c.Request.Context()
 	}
 	result := testChannel(requestCtx, channel, testUserID, testModel, endpointType, isStream)
+	if result.skipped {
+		c.JSON(http.StatusOK, gin.H{
+			"success":    false,
+			"status":     "skipped",
+			"error_code": channelTestUnsupportedCode,
+			"message":    result.localErr.Error(),
+		})
+		return
+	}
 	if result.localErr != nil {
 		resp := gin.H{
 			"success": false,
@@ -913,6 +930,7 @@ type channelTestSummary struct {
 	Tested    int `json:"tested"`
 	Succeeded int `json:"succeeded"`
 	Failed    int `json:"failed"`
+	Skipped   int `json:"skipped"`
 	Disabled  int `json:"disabled"`
 	Enabled   int `json:"enabled"`
 }
@@ -927,7 +945,16 @@ func testChannelForHealthCheck(ctx context.Context, channel *model.Channel, test
 		return summary
 	}
 
+	if result.skipped {
+		summary.Skipped++
+		return summary
+	}
 	summary.Tested++
+	// Local setup failures have no upstream health or latency evidence.
+	if result.localErr != nil && !result.upstreamAttempted {
+		summary.Failed++
+		return summary
+	}
 
 	shouldBanChannel := false
 	newAPIError := result.newAPIError
@@ -943,7 +970,7 @@ func testChannelForHealthCheck(ctx context.Context, channel *model.Channel, test
 		}
 	}
 
-	if newAPIError == nil {
+	if newAPIError == nil && result.localErr == nil {
 		summary.Succeeded++
 	} else {
 		summary.Failed++
@@ -1046,6 +1073,7 @@ func runChannelTestWorkers(
 		summary.Tested += result.Tested
 		summary.Succeeded += result.Succeeded
 		summary.Failed += result.Failed
+		summary.Skipped += result.Skipped
 		summary.Disabled += result.Disabled
 		summary.Enabled += result.Enabled
 		processed++
@@ -1103,7 +1131,7 @@ func runChannelTestTask(ctx context.Context, mode string, notify bool, report fu
 	concurrency := operation_setting.GetMonitorSetting().ChannelTestConcurrency
 	summary := performChannelTests(ctx, selected, testUserID, allowDisable, concurrency, report)
 	if notify && (ctx == nil || ctx.Err() == nil) {
-		service.NotifyRootUser(dto.NotifyTypeChannelTest, "通道测试完成", "所有通道测试已完成")
+		service.NotifyRootUser(dto.NotifyTypeChannelTest, "通道测试完成", fmt.Sprintf("成功 %d，失败 %d，跳过 %d。跳过的渠道未验证上游可用性。", summary.Succeeded, summary.Failed, summary.Skipped))
 	}
 	return summary, nil
 }

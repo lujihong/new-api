@@ -101,6 +101,10 @@ func channelMatchesFilter(ch *Channel, modelName string, filter dto.ChannelFilte
 		if ch.Type == constant.ChannelTypeTaskPlugin {
 			return filter.TaskPluginKey != "" && ch.GetSetting().TaskPluginKey == filter.TaskPluginKey
 		}
+		if ch.Type == constant.ChannelTypeNewAPI || ch.Type == constant.ChannelTypeSub2API ||
+			ch.Type == constant.ChannelTypeCustom || ch.Type == constant.ChannelTypeAdvancedCustom {
+			return true
+		}
 		return filter.TaskPluginKey == "" || slices.Contains(filter.TaskPluginChannelTypes, ch.Type)
 	default:
 		return true

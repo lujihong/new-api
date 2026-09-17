@@ -132,8 +132,9 @@ func GetOptions(c *gin.Context) {
 }
 
 type OptionUpdateRequest struct {
-	Key   string `json:"key"`
-	Value any    `json:"value"`
+	Key           string  `json:"key"`
+	Value         any     `json:"value"`
+	ExpectedValue *string `json:"expected_value,omitempty"`
 }
 
 func UpdateOption(c *gin.Context) {
@@ -415,7 +416,19 @@ func UpdateOption(c *gin.Context) {
 			return
 		}
 	}
-	err = model.UpdateOption(option.Key, option.Value.(string))
+	if option.Key == model.ModelDiscountOptionKey {
+		if option.ExpectedValue == nil {
+			c.JSON(http.StatusConflict, gin.H{"success": false, "message": "请先加载当前折扣规则，再携带原值保存"})
+			return
+		}
+		err = model.UpdateModelDiscountRulesConditional(option.Value.(string), *option.ExpectedValue)
+		if err == model.ErrModelDiscountConflict {
+			c.JSON(http.StatusConflict, gin.H{"success": false, "message": err.Error()})
+			return
+		}
+	} else {
+		err = model.UpdateOption(option.Key, option.Value.(string))
+	}
 	if err != nil {
 		common.ApiError(c, err)
 		return

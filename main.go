@@ -175,6 +175,11 @@ func main() {
 		common.SysError(fmt.Sprintf("start pyroscope error : %v", err))
 	}
 
+	// Sensitive import media must expire even when no further uploads arrive.
+	uploadCleanupContext, stopUploadCleanup := context.WithCancel(context.Background())
+	defer stopUploadCleanup()
+	service.StartAICCUploadCleanup(uploadCleanupContext)
+
 	// Initialize HTTP server
 	server := gin.New()
 	if err := middleware.ConfigureTrustedProxies(server); err != nil {

@@ -278,7 +278,8 @@ export async function handleTestChannel(
     success: boolean,
     responseTime?: number,
     error?: string,
-    errorCode?: string
+    errorCode?: string,
+    status?: ChannelTestResponse['status']
   ) => void
 ): Promise<void> {
   const payload =
@@ -294,9 +295,23 @@ export async function handleTestChannel(
 
   try {
     const response = await testChannel(id, payload)
+    const target = getChannelTestLabel(options)
+    // A skipped synchronous test says nothing about upstream health or latency.
+    if (response.status === 'skipped') {
+      const message = response.message || i18next.t('Channel test skipped reason', {
+        defaultValue: '此渠道不支持通用同步测试，已跳过，未请求上游。',
+      })
+      if (!options?.silent) {
+        toast.info(i18next.t('{{target}} test skipped', {
+          defaultValue: '{{target}} 测试已跳过',
+          target,
+        }), { description: message })
+      }
+      onTestComplete?.(false, undefined, message, response.error_code, 'skipped')
+      return
+    }
     const responseTime = getChannelTestResponseTime(response)
     const duration = formatChannelTestDuration(responseTime)
-    const target = getChannelTestLabel(options)
     if (response.success) {
       if (!options?.silent) {
         toast.success(

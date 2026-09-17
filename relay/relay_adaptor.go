@@ -132,6 +132,28 @@ func GetTaskPlatform(c *gin.Context) constant.TaskPlatform {
 		return constant.TaskPlatform(pluginKey)
 	}
 	channelType := c.GetInt("channel_type")
+	if constant.IsGenericRelayChannelType(channelType) {
+		modelName := c.GetString("original_model")
+		if modelName == "" {
+			modelName = c.GetString("resolved_task_model")
+		}
+		if modelName == "" {
+			modelName = c.GetString("model")
+		}
+		if modelName != "" {
+			generation := pluginruntime.DefaultRegistry.Generation()
+			if generation != nil {
+				if plugin, ok := generation.GetByModel(modelName); ok && plugin != nil {
+					return constant.TaskPlatform(plugin.Meta.Key)
+				}
+				if canonical, ok := generation.CanonicalModel(modelName); ok && canonical != "" {
+					if plugin, ok := generation.GetByModel(canonical); ok && plugin != nil {
+						return constant.TaskPlatform(plugin.Meta.Key)
+					}
+				}
+			}
+		}
+	}
 	if channelType > 0 {
 		return constant.TaskPlatform(strconv.Itoa(channelType))
 	}
@@ -139,18 +161,22 @@ func GetTaskPlatform(c *gin.Context) constant.TaskPlatform {
 }
 
 var taskPluginKeys = map[constant.TaskPlatform]string{
-	constant.TaskPlatformSuno:                                            "sunoapi",
-	constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeAli)):         "alibaba",
-	constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeKling)):       "kling",
-	constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeJimeng)):      "jimeng",
-	constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeVidu)):        "vidu",
-	constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeDoubaoVideo)): "doubao",
-	constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeVolcEngine)):  "doubao",
-	constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeGemini)):      "google",
-	constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeMiniMax)):     "hailuo",
-	constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeSora)):        "sora",
-	constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeOpenAI)):      "sora",
-	constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeVertexAi)):    "vertex-ai",
+	constant.TaskPlatformSuno:                                               "sunoapi",
+	constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeAli)):            "alibaba",
+	constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeKling)):          "kling",
+	constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeJimeng)):         "jimeng",
+	constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeVidu)):           "vidu",
+	constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeDoubaoVideo)):    "doubao",
+	constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeVolcEngine)):     "doubao",
+	constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeGemini)):         "google",
+	constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeMiniMax)):        "hailuo",
+	constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeSora)):           "sora",
+	constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeOpenAI)):         "sora",
+	constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeNewAPI)):         "sora",
+	constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeSub2API)):        "sora",
+	constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeCustom)):         "sora",
+	constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeAdvancedCustom)): "sora",
+	constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeVertexAi)):       "vertex-ai",
 }
 
 func ResolveTaskPluginForPlatform(generation *pluginruntime.RoutingGeneration, platform constant.TaskPlatform) (*pluginruntime.LoadedPlugin, bool) {

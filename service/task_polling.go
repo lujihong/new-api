@@ -363,6 +363,12 @@ func updateBatchTasks(ctx context.Context, adaptor BatchTaskPollingAdaptor, chan
 
 		isDone := task.Status == model.TaskStatusSuccess || task.Status == model.TaskStatusFailure
 		terminalTransition := isDone && snap.Status != task.Status
+		var prepared *preparedTieredSettlement
+		if bc := task.PrivateData.BillingContext; terminalTransition && task.Status == model.TaskStatusSuccess && bc != nil && bc.TieredSnapshot != nil {
+			// Commit the actual usage alongside the terminal state, before billing.
+			result, err := prepareTaskTieredUsage(task, &responseItem.TaskInfo)
+			prepared = &preparedTieredSettlement{result: result, err: err}
+		}
 		won, updateErr := task.UpdateWithStatus(snap.Status)
 		if updateErr != nil {
 			common.SysLog("UpdateSunoTask task error: " + updateErr.Error())
@@ -373,7 +379,7 @@ func updateBatchTasks(ctx context.Context, adaptor BatchTaskPollingAdaptor, chan
 			continue
 		}
 		if terminalTransition {
-			billingSettled := settleTaskBillingOnComplete(ctx, adaptor, task, &responseItem.TaskInfo)
+			billingSettled := settleTaskBillingOnCompletePrepared(ctx, adaptor, task, &responseItem.TaskInfo, prepared)
 			if task.Status == model.TaskStatusFailure && !billingSettled && task.Quota != 0 {
 				RefundTaskQuota(ctx, task, task.FailReason)
 			}
@@ -597,7 +603,15 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 	}
 
 	isDone := task.Status == model.TaskStatusSuccess || task.Status == model.TaskStatusFailure
+	var prepared *preparedTieredSettlement
 	if isDone && snap.Status != task.Status {
+		if bc := task.PrivateData.BillingContext; task.Status == model.TaskStatusSuccess && bc != nil && bc.TieredSnapshot != nil {
+			// Persist final facts with the terminal CAS, even when the quota delta is zero
+			// or expression evaluation fails. This prepares evidence only, not payment.
+			// Only the CAS winner below may settle; evaluation errors are logged there.
+			result, err := prepareTaskTieredUsage(task, taskResult)
+			prepared = &preparedTieredSettlement{result: result, err: err}
+		}
 		won, err := task.UpdateWithStatus(snap.Status)
 		if err != nil {
 			logger.LogError(ctx, fmt.Sprintf("UpdateWithStatus failed for task %s: %s", task.TaskID, err.Error()))
@@ -616,7 +630,7 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 	}
 
 	if shouldFinalizeBilling {
-		billingSettled := settleTaskBillingOnComplete(ctx, adaptor, task, taskResult)
+		billingSettled := settleTaskBillingOnCompletePrepared(ctx, adaptor, task, taskResult, prepared)
 		if task.Status == model.TaskStatusFailure && !billingSettled && task.Quota != 0 {
 			RefundTaskQuota(ctx, task, task.FailReason)
 		}
@@ -659,21 +673,51 @@ func truncateBase64(s string) string {
 	return s[:maxKeep] + "..."
 }
 
+// prepareTaskTieredUsage only prepares a detached snapshot; it never writes to
+// the DB or changes funding. The caller must have an existing tiered context.
+// Keep merged facts on evaluation failure without claiming a newly matched tier.
+func prepareTaskTieredUsage(task *model.Task, taskResult *relaycommon.TaskInfo) (billingexpr.TieredResult, error) {
+	bc := *task.PrivateData.BillingContext
+	snapshot := *bc.TieredSnapshot
+	usageFacts := make(map[string]any, len(snapshot.UsageFacts)+len(taskResult.UsageFacts))
+	maps.Copy(usageFacts, snapshot.UsageFacts)
+	maps.Copy(usageFacts, taskResult.UsageFacts)
+	snapshot.UsageFacts = usageFacts
+	bc.TieredSnapshot = &snapshot
+	task.PrivateData.BillingContext = &bc
+
+	result, err := billingexpr.ComputeTieredQuotaWithRequest(&snapshot, billingexpr.TokenParams{}, billingexpr.RequestInput{Usage: usageFacts})
+	if err == nil {
+		snapshot.EstimatedTier = result.MatchedTier
+	}
+	return result, err
+}
+
 // settleTaskBillingOnComplete 任务完成时的统一计费调整。
 // 返回 true 表示用量结算路径已接管最终计费；失败任务仅在返回 false 时补做全额退款。
 // 优先级：1. tiered snapshot → 2. adaptor 调整 → 3. token 重算。
 //
 // 表达式求值失败会保留预扣额度，因此也视为已接管，避免错误全退。
+type preparedTieredSettlement struct {
+	result billingexpr.TieredResult
+	err    error
+}
+
 func settleTaskBillingOnComplete(ctx context.Context, adaptor TaskPollingAdaptor, task *model.Task, taskResult *relaycommon.TaskInfo) bool {
+	return settleTaskBillingOnCompletePrepared(ctx, adaptor, task, taskResult, nil)
+}
+
+func settleTaskBillingOnCompletePrepared(ctx context.Context, adaptor TaskPollingAdaptor, task *model.Task, taskResult *relaycommon.TaskInfo, prepared *preparedTieredSettlement) bool {
 	if bc := task.PrivateData.BillingContext; bc != nil && bc.TieredSnapshot != nil {
 		// 用量表达式结算只适用于成功任务；失败任务由调用方全额退款。
 		if task.Status == model.TaskStatusFailure {
 			return false
 		}
-		usageFacts := make(map[string]any, len(bc.TieredSnapshot.UsageFacts)+len(taskResult.UsageFacts))
-		maps.Copy(usageFacts, bc.TieredSnapshot.UsageFacts)
-		maps.Copy(usageFacts, taskResult.UsageFacts)
-		result, err := billingexpr.ComputeTieredQuotaWithRequest(bc.TieredSnapshot, billingexpr.TokenParams{}, billingexpr.RequestInput{Usage: usageFacts})
+		if prepared == nil {
+			result, err := prepareTaskTieredUsage(task, taskResult)
+			prepared = &preparedTieredSettlement{result: result, err: err}
+		}
+		result, err := prepared.result, prepared.err
 		if err != nil {
 			logger.LogWarn(ctx, fmt.Sprintf("任务 %s 表达式结算失败，保留预扣额度: %v", task.TaskID, err))
 			return true
@@ -681,8 +725,6 @@ func settleTaskBillingOnComplete(ctx context.Context, adaptor TaskPollingAdaptor
 		if result.Clamp != nil {
 			logger.LogWarn(ctx, fmt.Sprintf("任务 %s 表达式结算额度发生饱和: %+v", task.TaskID, result.Clamp))
 		}
-		bc.TieredSnapshot.UsageFacts = usageFacts
-		bc.TieredSnapshot.EstimatedTier = result.MatchedTier
 		RecalculateTaskQuota(ctx, task, result.ActualQuotaAfterGroup, "任务用量表达式结算", result.Clamp)
 		return true
 	}

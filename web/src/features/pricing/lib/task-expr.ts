@@ -38,6 +38,7 @@ export type TaskVisualTier = {
   conditions: TaskVisualCondition[]
   constant: number
   unitPrices: Record<string, number>
+  freeThresholds?: Record<string, number>
 }
 
 export type TaskVisualConfig = {
@@ -48,6 +49,7 @@ export type TaskMatrixRow = {
   combination: Record<string, string>
   constant: number
   unitPrices: Record<string, number>
+  freeThresholds?: Record<string, number>
 }
 
 export type TaskMatrixConfig = {
@@ -160,7 +162,9 @@ export function taskMatrixToTiers(
     (row) =>
       row.constant === firstRow.constant &&
       numberFields.every(
-        ([field]) => row.unitPrices[field] === firstRow.unitPrices[field]
+        ([field]) =>
+          row.unitPrices[field] === firstRow.unitPrices[field] &&
+          row.freeThresholds?.[field] === firstRow.freeThresholds?.[field]
       )
   )
   if (isUniform) {
@@ -175,6 +179,9 @@ export function taskMatrixToTiers(
             firstRow.unitPrices[field] ?? 0,
           ])
         ),
+        ...(firstRow.freeThresholds && Object.keys(firstRow.freeThresholds).length > 0
+          ? { freeThresholds: { ...firstRow.freeThresholds } }
+          : {}),
       },
     ]
   }
@@ -191,6 +198,9 @@ export function taskMatrixToTiers(
     unitPrices: Object.fromEntries(
       numberFields.map(([field]) => [field, row.unitPrices[field] ?? 0])
     ),
+    ...(row.freeThresholds && Object.keys(row.freeThresholds).length > 0
+      ? { freeThresholds: { ...row.freeThresholds } }
+      : {}),
   }))
 }
 
@@ -217,6 +227,9 @@ export function tryParseTaskMatrixConfig(
             tiers[0].unitPrices[field] ?? 0,
           ])
         ),
+        ...(tiers[0].freeThresholds && Object.keys(tiers[0].freeThresholds).length > 0
+          ? { freeThresholds: { ...tiers[0].freeThresholds } }
+          : {}),
       })),
     }
   }
@@ -272,6 +285,9 @@ export function tryParseTaskMatrixConfig(
       unitPrices: Object.fromEntries(
         numberFields.map(([field]) => [field, tier.unitPrices[field] ?? 0])
       ),
+      ...(tier.freeThresholds && Object.keys(tier.freeThresholds).length > 0
+        ? { freeThresholds: { ...tier.freeThresholds } }
+        : {}),
     })
   }
   return { rows }
@@ -313,12 +329,21 @@ export function evaluateTaskVisualConfig(
 
     const quantity = Number(sample[field])
     if (!Number.isFinite(quantity) || quantity < 0) return null
+    const threshold = Number(matchedTier.freeThresholds?.[field] ?? 0)
+    if (!Number.isFinite(threshold) || threshold < 0) return null
+    const billableQuantity = Math.max(quantity - threshold, 0)
     const amount =
       schema?.[field]?.unit === 'token'
-        ? (quantity * unitPrice) / TASK_TOKEN_PRICE_SCALE
-        : quantity * unitPrice
+        ? (billableQuantity * unitPrice) / TASK_TOKEN_PRICE_SCALE
+        : billableQuantity * unitPrice
     if (!Number.isFinite(amount)) return null
-    parts.push({ kind: 'usage', field, amount, quantity, unitPrice })
+    parts.push({
+      kind: 'usage',
+      field,
+      amount,
+      quantity: billableQuantity,
+      unitPrice,
+    })
     total += amount
   }
 
@@ -367,6 +392,14 @@ export function normalizeTaskVisualConfig(
           return [field, Number.isFinite(value) && value >= 0 ? value : 0]
         })
       )
+      const freeThresholds = Object.fromEntries(
+        [...numberFields].flatMap((field) => {
+          const value = Number(tier.freeThresholds?.[field])
+          return Number.isFinite(value) && value >= 0 && value > 0
+            ? [[field, value]]
+            : []
+        })
+      )
       const constant = Number(tier.constant)
       return {
         label: tier.label || (index === 0 ? 'base' : `tier_${index + 1}`),
@@ -375,6 +408,7 @@ export function normalizeTaskVisualConfig(
         ),
         constant: Number.isFinite(constant) && constant >= 0 ? constant : 0,
         unitPrices,
+        ...(Object.keys(freeThresholds).length > 0 ? { freeThresholds } : {}),
       }
     }),
   }
@@ -388,13 +422,15 @@ function generateTaskTierBody(
   if (tier.constant > 0) parts.push(String(tier.constant))
   for (const [field, definition] of numberFields) {
     const price = tier.unitPrices[field] ?? 0
+    const threshold = tier.freeThresholds?.[field] ?? 0
+    const usage = threshold > 0
+      ? `(u(${JSON.stringify(field)}) > ${threshold} ? (u(${JSON.stringify(field)}) - ${threshold}) : 0)`
+      : `u(${JSON.stringify(field)})`
     if (definition.unit === 'token') {
-      parts.push(
-        `u(${JSON.stringify(field)}) * ${price} / ${TASK_TOKEN_PRICE_SCALE}`
-      )
+      parts.push(`${usage} * ${price} / ${TASK_TOKEN_PRICE_SCALE}`)
       continue
     }
-    parts.push(`u(${JSON.stringify(field)}) * ${price}`)
+    parts.push(`${usage} * ${price}`)
   }
   return parts.join(' + ')
 }
@@ -455,6 +491,7 @@ export function tryParseTaskVisualConfig(
         conditions: tier.conditions,
         constant: tier.constant,
         unitPrices: tier.unitPrices,
+        freeThresholds: tier.freeThresholds,
       })),
     },
     schema

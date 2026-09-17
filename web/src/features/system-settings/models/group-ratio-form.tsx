@@ -223,7 +223,7 @@ export const GroupRatioForm = memo(function GroupRatioForm({
                     <FormLabel>{t('Default to auto groups')}</FormLabel>
                     <FormDescription>
                       {t(
-                        'When enabled, newly created tokens start in the first auto group.'
+                        '启用后，新建令牌默认选择 auto，调用时按有权限的自动分组顺序选路；不是固定选择第一个组。'
                       )}
                     </FormDescription>
                   </SettingsSwitchContent>
@@ -256,7 +256,11 @@ export const GroupRatioForm = memo(function GroupRatioForm({
                   </FormControl>
                   <FormDescription>
                     {t(
-                      'JSON map of group → ratio applied when the user selects the group explicitly.'
+                      'JSON map of group → ratio applied when the user selects the group explicitly.',
+                      {
+                        defaultValue:
+                          'JSON 对象：路由组 → 基础倍率。显式选择、继承用户组及 auto 实际选中的组均适用；命中组间特殊倍率时由其替代，再乘逐模型优惠。',
+                      }
                     )}
                   </FormDescription>
                   <FormMessage />
@@ -336,7 +340,11 @@ export const GroupRatioForm = memo(function GroupRatioForm({
                     {t('Nested JSON: source group →')}{' '}
                     {`{ targetGroup: ratio }`}{' '}
                     {t(
-                      'to override billing when a user in one group uses a token of another group.'
+                      'to override billing when a user in one group uses a token of another group.',
+                      {
+                        defaultValue:
+                          '按 用户组 → 实际计费组 覆盖组倍率；两者相同也可配置，不覆盖逐模型优惠。',
+                      }
                     )}
                   </FormDescription>
                   <FormMessage />
@@ -362,7 +370,7 @@ export const GroupRatioForm = memo(function GroupRatioForm({
                   </FormControl>
                   <FormDescription>
                     {t(
-                      'JSON array of group identifiers. When enabled below, new tokens rotate through this list.'
+                      '自动分组的有序候选列表。令牌使用 auto 时，按权限过滤后的顺序查找可用渠道；不是轮询分配，也不会自动比较采购成本。'
                     )}
                   </FormDescription>
                   <FormMessage />
@@ -429,7 +437,7 @@ export const GroupRatioForm = memo(function GroupRatioForm({
                     <FormLabel>{t('Default to auto groups')}</FormLabel>
                     <FormDescription>
                       {t(
-                        'When enabled, newly created tokens start in the first auto group.'
+                        '启用后，新建令牌默认选择 auto，调用时按有权限的自动分组顺序选路；不是固定选择第一个组。'
                       )}
                     </FormDescription>
                   </SettingsSwitchContent>
@@ -531,6 +539,23 @@ function GroupPricingGuide({ open, onOpenChange }: GroupPricingGuideProps) {
 
           <section className='space-y-2'>
             <h3 className='text-sm font-semibold'>
+              {t('渠道、模型与客户优惠分开配置')}
+            </h3>
+            <p className='text-muted-foreground text-sm leading-6'>
+              {t('一个渠道可以加入多个分组，也可以提供多个模型。系统按渠道声明的分组和模型建立可用路由；上游只有一个模型，不代表渠道只能选择一个分组。')}
+            </p>
+            <p className='text-muted-foreground text-sm leading-6'>
+              {t('同一模型给不同客户不同价格，建议共用路由组，在逐模型优惠中设置用户组优惠或个人优惠。优惠匹配客户端原始模型 ID，与上游模型映射名称无关。特殊组倍率和模型优惠会相乘，注意避免重复让利。')}
+            </p>
+            <p className='text-muted-foreground text-sm leading-6'>
+              {t(
+                '模型映射负责上游名称适配；渠道优先级负责选路顺序（高优先级优先，同级按权重随机），重试可降到下一优先级。它们不记录采购价，采购成本不参与自动选路。充值倍率用于充值，不能当调用折扣。真人素材还必须满足对应上游账号的访问条件，不能盲目跨渠道重试。'
+              )}
+            </p>
+          </section>
+
+          <section className='space-y-2'>
+            <h3 className='text-sm font-semibold'>
               {t('How a call is priced')}
             </h3>
             <ol className='text-muted-foreground list-decimal space-y-2 pl-5 text-sm leading-6'>
@@ -539,7 +564,7 @@ function GroupPricingGuide({ open, onOpenChange }: GroupPricingGuideProps) {
                   {t('Find the billing group.')}
                 </span>{' '}
                 {t(
-                  'Use the group set on the token. If the token has no group, use the user group. The auto group tries the auto assignment order from top to bottom.'
+                  'Key 指定组时使用该组；留空继承用户组。auto 使用 Key 自定义候选列表或全局列表，按当前权限过滤后的顺序查找该模型的可用渠道，以实际选中的组计费；失败后的跨组重试还受 Key 开关及重试策略控制。'
                 )}
               </li>
               <li>
@@ -555,7 +580,7 @@ function GroupPricingGuide({ open, onOpenChange }: GroupPricingGuideProps) {
                   {t('Charge.')}
                 </span>{' '}
                 {t(
-                  'Cost = model price × that one ratio. Nothing else from the group settings enters the formula.'
+                  '按原有模型计费方式计算用量金额，再乘上述有效组倍率和逐模型优惠系数。个人模型优惠优先于用户组模型优惠，两者不叠乘；都未设置则优惠系数为 1。'
                 )}
               </li>
             </ol>
@@ -623,7 +648,7 @@ function GroupPricingGuide({ open, onOpenChange }: GroupPricingGuideProps) {
 
             <p className='text-muted-foreground text-sm leading-6'>
               {t(
-                'Three calls made by the same vip user. Assume the base price of one call is 10.'
+                '同一位 vip 用户的三次调用。以下数字仅作演示，假设一次调用基础金额为 10，且未设置任何逐模型优惠。'
               )}
             </p>
 
@@ -712,11 +737,11 @@ function GroupPricingGuide({ open, onOpenChange }: GroupPricingGuideProps) {
                   {`${t('Group name')}   ${t('Ratio')}   ${t('User selectable')}   ${t('Description')}
 standard     1.0     ${t('Yes')}               ${t('Standard price')}
 premium      0.5     ${t('Yes')}               ${t('Premium plan, half price')}
-vip          0.5     ${t('No')}                ${t('Assigned by administrator only')}`}
+vip          0.5     ${t('No')}                ${t('不在全局可选列表；所属用户仍可选，其他用户可由特殊规则开放')}`}
                 </GuideCodeBlock>
                 <p className='text-muted-foreground text-sm leading-6'>
                   {t(
-                    'Users only see groups marked as user selectable. Non-selectable groups can still be assigned by administrators.'
+                    '可选组由全局可选组和用户组特殊规则共同决定；系统还会补回用户自身的组。显式选择的路由组必须仍有有效倍率配置。'
                   )}
                 </p>
               </AccordionContent>
@@ -727,7 +752,11 @@ vip          0.5     ${t('No')}                ${t('Assigned by administrator on
               <AccordionContent className='space-y-3'>
                 <p className='text-muted-foreground text-sm leading-6'>
                   {t(
-                    'When a token uses the auto group, the system tries groups from top to bottom until it finds an available group.'
+                    'When a token uses the auto group, the system tries groups from top to bottom until it finds an available group.',
+                    {
+                      defaultValue:
+                        '令牌使用 auto 时，按权限过滤后的顺序查找可用渠道；失败后的跨组重试还受令牌开关及重试策略控制。不是轮询，也不比较采购成本。',
+                    }
                   )}
                 </p>
                 <GuideCodeBlock>{`["default", "vip"]`}</GuideCodeBlock>
@@ -744,7 +773,11 @@ vip          0.5     ${t('No')}                ${t('Assigned by administrator on
               <AccordionContent className='space-y-3'>
                 <p className='text-muted-foreground text-sm leading-6'>
                   {t(
-                    'In JSON, the user group is the outer key and the billing group is the inner key. The example below means: vip users pay 0.8 when billed as standard, and 0.3 when billed as premium.'
+                    'In JSON, the user group is the outer key and the billing group is the inner key. The example below means: vip users pay 0.8 when billed as standard, and 0.3 when billed as premium.',
+                    {
+                      defaultValue:
+                        '在 JSON 中，用户组为外层键，实际计费组为内层键。例如：vip 用户使用 standard 时的组倍率替换为 0.8，使用 premium 时替换为 0.3；最终金额还需乘逐模型优惠系数。',
+                    }
                   )}
                 </p>
                 <GuideCodeBlock>{`{

@@ -59,6 +59,7 @@ import {
   sideDrawerHeaderClassName,
 } from '@/components/drawer-layout'
 import { StatusBadge } from '@/components/status-badge'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
@@ -107,7 +108,7 @@ type ModelRow = {
   model: string
 }
 
-type TestStatus = 'idle' | 'testing' | 'success' | 'error'
+type TestStatus = 'idle' | 'testing' | 'success' | 'error' | 'skipped'
 
 type TestResult = {
   status: TestStatus
@@ -122,6 +123,7 @@ type BatchProgress = {
   completed: number
   success: number
   failed: number
+  skipped: number
 }
 
 type ChannelTestCachePatch = {
@@ -155,6 +157,7 @@ function getLatestChannelTestCachePatch(
 ): ChannelTestCachePatch | undefined {
   const latest = results.reduce<LatestChannelTestCachePatch | undefined>(
     (latestPatch, result) => {
+      if (result.status === 'skipped') return latestPatch
       const completedAt = result.completedAt ?? 0
       const patch = createChannelTestCachePatch(
         result.responseTime,
@@ -200,6 +203,8 @@ const STREAM_INCOMPATIBLE_ENDPOINTS = new Set([
   'jina-rerank',
   'openai-response-compact',
 ])
+
+const ASYNC_CHANNEL_TYPES = new Set([2, 5, 36, 50, 51, 52, 54, 61])
 
 const MODEL_PRICE_ERROR_CODE = 'model_price_error'
 const FAILURE_SUMMARY_MAX_LENGTH = 96
@@ -375,10 +380,14 @@ function ChannelTestDialogContent({
       completed: batchProgress.completed,
       total: batchProgress.total,
     })
-    const resultText = t('{{success}} succeeded, {{failed}} failed', {
-      success: batchProgress.success,
-      failed: batchProgress.failed,
-    })
+    const resultText = t(
+      '{{success}} succeeded, {{failed}} failed, {{skipped}} skipped',
+      {
+        success: batchProgress.success,
+        failed: batchProgress.failed,
+        skipped: batchProgress.skipped,
+      }
+    )
 
     batchProgressToastIdRef.current = toast.loading(title, {
       id: batchProgressToastIdRef.current ?? undefined,
@@ -451,6 +460,11 @@ function ChannelTestDialogContent({
 
   const failedModels = useMemo(
     () => models.filter((model) => testResults[model]?.status === 'error'),
+    [models, testResults]
+  )
+
+  const skippedModels = useMemo(
+    () => models.filter((model) => testResults[model]?.status === 'skipped'),
     [models, testResults]
   )
 
@@ -555,11 +569,17 @@ function ChannelTestDialogContent({
             stream: effectiveStreamTest || undefined,
             silent,
           },
-          (success, responseTime, error, errorCode) => {
+          (success, responseTime, error, errorCode, status) => {
             const completedAt = Date.now()
+            let finalStatus: TestStatus = 'error'
+            if (status === 'skipped') {
+              finalStatus = 'skipped'
+            } else if (success) {
+              finalStatus = 'success'
+            }
             finalResult = {
-              status: success ? 'success' : 'error',
-              responseTime,
+              status: finalStatus,
+              responseTime: finalStatus === 'skipped' ? undefined : responseTime,
               completedAt,
               error,
               errorCode,
@@ -578,10 +598,12 @@ function ChannelTestDialogContent({
         markModelTesting(model, false)
         if (refreshList) {
           refreshChannelLists(
-            createChannelTestCachePatch(
-              finalResult?.responseTime,
-              finalResult?.completedAt
-            )
+            finalResult?.status === 'skipped'
+              ? undefined
+              : createChannelTestCachePatch(
+                  finalResult?.responseTime,
+                  finalResult?.completedAt
+                )
           )
         }
       }
@@ -620,6 +642,7 @@ function ChannelTestDialogContent({
         completed: 0,
         success: 0,
         failed: 0,
+        skipped: 0,
       })
 
       let resultPatch: ChannelTestCachePatch | undefined
@@ -627,6 +650,7 @@ function ChannelTestDialogContent({
       let completedCount = 0
       let successCount = 0
       let failedCount = 0
+      let skippedCount = 0
 
       try {
         const createFallbackResult = (error?: unknown): TestResult => ({
@@ -640,14 +664,17 @@ function ChannelTestDialogContent({
           completedCount += 1
           if (result.status === 'success') {
             successCount += 1
+          } else if (result.status === 'skipped') {
+            skippedCount += 1
           }
-          failedCount = completedCount - successCount
+          failedCount = completedCount - successCount - skippedCount
 
           setBatchProgress({
             total: uniqueModels.length,
             completed: completedCount,
             success: successCount,
             failed: failedCount,
+            skipped: skippedCount,
           })
         }
 
@@ -700,25 +727,66 @@ function ChannelTestDialogContent({
         dismissBatchProgressToast()
         if (stopped) {
           toast.info(
-            t(
-              'Batch test stopped: {{completed}}/{{total}} completed, {{success}} succeeded, {{failed}} failed',
-              {
-                completed: completedCount,
-                total: uniqueModels.length,
-                success: successCount,
-                failed: failedCount,
-              }
-            )
+            skippedCount > 0
+              ? t(
+                  'Batch test stopped: {{completed}}/{{total}} completed, {{success}} succeeded, {{failed}} failed, {{skipped}} skipped',
+                  {
+                    defaultValue:
+                      '批量测试已停止：{{completed}}/{{total}} 完成，{{success}} 成功，{{failed}} 失败，{{skipped}} 跳过',
+                    completed: completedCount,
+                    total: uniqueModels.length,
+                    success: successCount,
+                    failed: failedCount,
+                    skipped: skippedCount,
+                  }
+                )
+              : t(
+                  'Batch test stopped: {{completed}}/{{total}} completed, {{success}} succeeded, {{failed}} failed',
+                  {
+                    completed: completedCount,
+                    total: uniqueModels.length,
+                    success: successCount,
+                    failed: failedCount,
+                  }
+                )
           )
         } else if (failedCount > 0) {
           toast.error(
-            t(
-              'Batch test completed: {{success}} succeeded, {{failed}} failed',
-              {
-                success: successCount,
-                failed: failedCount,
-              }
-            )
+            skippedCount > 0
+              ? t(
+                  'Batch test completed: {{success}} succeeded, {{failed}} failed, {{skipped}} skipped',
+                  {
+                    defaultValue:
+                      '批量测试完成：{{success}} 成功，{{failed}} 失败，{{skipped}} 跳过',
+                    success: successCount,
+                    failed: failedCount,
+                    skipped: skippedCount,
+                  }
+                )
+              : t(
+                  'Batch test completed: {{success}} succeeded, {{failed}} failed',
+                  {
+                    success: successCount,
+                    failed: failedCount,
+                  }
+                )
+          )
+        } else if (skippedCount > 0) {
+          toast.info(
+            successCount > 0
+              ? t(
+                  'Batch test completed: {{success}} succeeded, {{skipped}} skipped',
+                  {
+                    defaultValue:
+                      '批量测试完成：{{success}} 成功，{{skipped}} 跳过',
+                    success: successCount,
+                    skipped: skippedCount,
+                  }
+                )
+              : t('Batch test completed: {{count}} skipped', {
+                  defaultValue: '批量测试完成：{{count}} 个模型已跳过',
+                  count: skippedCount,
+                })
           )
         } else {
           toast.success(
@@ -984,6 +1052,13 @@ function ChannelTestDialogContent({
         }
       >
         <div className='max-h-[78vh] space-y-4 overflow-y-auto py-4 pr-1'>
+          {ASYNC_CHANNEL_TYPES.has(currentRow.type) && (
+            <div className='border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300 rounded-md border p-3 text-xs leading-5'>
+              {t(
+                '此渠道为异步任务类型（如视频/音乐生成），不支持通用同步测试。端点选择与流式测试不适用；测试将直接跳过，未请求上游、未发起生成任务。'
+              )}
+            </div>
+          )}
           <div className='grid gap-4 md:grid-cols-2'>
             <div className='grid gap-2'>
               <Label htmlFor='endpoint-type'>{t('Endpoint Type')}</Label>
@@ -1019,6 +1094,19 @@ placeholder={t('Auto detect (default)')}
               </p>
             </div>
           </div>
+
+          <Alert className='bg-muted/40 border-border text-muted-foreground'>
+            <Info className='size-4 text-muted-foreground' />
+            <AlertDescription className='text-xs leading-relaxed text-muted-foreground'>
+              {t(
+                'Channel test async note',
+                {
+                  defaultValue:
+                    '提示：视频生成、异步任务或轮询类等渠道不适用通用同步测试端点；测试时会自动跳过且不请求上游，避免误报与额外开销。',
+                }
+              )}
+            </AlertDescription>
+          </Alert>
 
           <div className='space-y-3 max-sm:has-[div[role="toolbar"]]:pb-16'>
             <div className='flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between'>
@@ -1071,6 +1159,14 @@ placeholder={t('Auto detect (default)')}
                             count: failedModels.length,
                           })}
                         </Button>
+                      )}
+                      {skippedModels.length > 0 && (
+                        <span className='text-muted-foreground text-xs font-medium'>
+                          {t('{{count}} skipped', {
+                            defaultValue: '{{count}} 个已跳过',
+                            count: skippedModels.length,
+                          })}
+                        </span>
                       )}
                     </>
                   )}
@@ -1181,6 +1277,16 @@ function TestStatusCell({ result }: { result?: TestResult }) {
     )
   }
 
+  if (result.status === 'skipped') {
+    return (
+      <StatusBadge
+        label={t('Skipped', { defaultValue: '已跳过' })}
+        variant='warning'
+        copyable={false}
+      />
+    )
+  }
+
   return <StatusBadge label={t('Failed')} variant='danger' copyable={false} />
 }
 
@@ -1215,6 +1321,14 @@ function TestResultCell({
       </span>
     ) : (
       <span className='text-muted-foreground text-sm'>-</span>
+    )
+  }
+
+  if (result.status === 'skipped') {
+    return (
+      <span className='text-muted-foreground text-xs' title={result.error}>
+        {result.error || t('Test skipped', { defaultValue: '已跳过通用测试' })}
+      </span>
     )
   }
 

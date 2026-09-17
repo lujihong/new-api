@@ -10,3 +10,12 @@ docs
 /web/node_modules
 /web/dist
 !THIRD-PARTY-LICENSES.md
+.env*
+!.env.example
+docker-compose*.yml
+data/
+logs/
+backups/
+*.dump
+*.tar.gz
+*.test

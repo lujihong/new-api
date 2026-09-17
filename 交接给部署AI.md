@@ -1,5 +1,7 @@
 # 交接给部署 AI：鑫元宝 New API 升级上线
 
+> 2026-09-16 更新：以下为历史升级交接，禁止直接按旧 compose 重建。当前本地路径 `/Users/lujihong/docker/www/鑫元宝/new-api`；线上发布配置 `/data/xybcloud/releases/aicc-20260916/compose.json`。以父目录 `项目管理说明.md` 与 `本轮发布验收记录.md` 的当前状态及现场 inspect 为准。
+
 你要把 **本机已经准备好的代码与脚本** 部署到 **生产服务器**。  
 生产站点：**鑫元宝云计算模型服务平台** · 用户访问 **`https://api.xybcloud.com`**。
 

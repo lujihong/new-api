@@ -53,18 +53,22 @@ func runProgram(prog *vm.Program, requestRules []RequestRuleTrace, params TokenP
 		RequestRules: append([]RequestRuleTrace(nil), requestRules...),
 	}
 	headers := normalizeHeaders(request.Headers)
+	vs := resolveVideoSeconds(params, request)
 
 	env := map[string]any{
-		"p":     params.P,
-		"c":     params.C,
-		"len":   params.Len,
-		"cr":    params.CR,
-		"cc":    params.CC,
-		"cc1h":  params.CC1h,
-		"img":   params.Img,
-		"img_o": params.ImgO,
-		"ai":    params.AI,
-		"ao":    params.AO,
+		"p":        params.P,
+		"c":        params.C,
+		"len":      params.Len,
+		"cr":       params.CR,
+		"cc":       params.CC,
+		"cc1h":     params.CC1h,
+		"img":      params.Img,
+		"img_o":    params.ImgO,
+		"ai":       params.AI,
+		"ao":       params.AO,
+		"vs":       vs,
+		"duration": vs,
+		"seconds":  vs,
 		"tier": func(name string, value float64) float64 {
 			trace.MatchedTier = name
 			trace.Cost = value
@@ -103,10 +107,15 @@ func runProgram(prog *vm.Program, requestRules []RequestRuleTrace, params TokenP
 			return result.Value()
 		},
 		"u": func(name string) any {
+			key := strings.TrimSpace(name)
 			if request.Usage == nil {
-				return nil
+				return defaultUsageValue(key)
 			}
-			return request.Usage[strings.TrimSpace(name)]
+			val, exists := request.Usage[key]
+			if !exists || val == nil {
+				return defaultUsageValue(key)
+			}
+			return val
 		},
 		"has": func(source any, substr string) bool {
 			if source == nil || substr == "" {
@@ -163,4 +172,61 @@ func normalizeHeaders(headers map[string]string) map[string]string {
 		normalized[k] = v
 	}
 	return normalized
+}
+
+func resolveVideoSeconds(params TokenParams, request RequestInput) float64 {
+	if params.VS > 0 {
+		return params.VS
+	}
+	if request.Usage != nil {
+		for _, key := range []string{"seconds", "duration", "duration_seconds", "output_seconds", "video_seconds", "vs"} {
+			if val, ok := request.Usage[key]; ok {
+				if num := toFloat64(val); num > 0 {
+					return num
+				}
+			}
+		}
+	}
+	if len(request.Body) > 0 {
+		for _, path := range []string{"seconds", "duration", "duration_seconds", "video_seconds", "output_seconds", "vs"} {
+			res := gjson.GetBytes(request.Body, path)
+			if res.Exists() && res.Type == gjson.Number {
+				return res.Float()
+			}
+		}
+	}
+	return 0
+}
+
+func toFloat64(val any) float64 {
+	switch v := val.(type) {
+	case float64:
+		return v
+	case float32:
+		return float64(v)
+	case int:
+		return float64(v)
+	case int64:
+		return float64(v)
+	case int32:
+		return float64(v)
+	case uint:
+		return float64(v)
+	case uint64:
+		return float64(v)
+	case uint32:
+		return float64(v)
+	}
+	return 0
+}
+
+func defaultUsageValue(name string) any {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "tokens", "seconds", "duration", "duration_seconds", "output_seconds",
+		"video_seconds", "input_seconds", "input_video_seconds", "input_images",
+		"units", "credits", "count", "clips", "p", "c", "len", "vs":
+		return float64(0)
+	default:
+		return nil
+	}
 }

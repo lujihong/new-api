@@ -1,5 +1,6 @@
 {
   "translation": {
+    "AICC Assets": "AICC 素材与真人认证",
     "360": "360",
     "1000": "1000",
     "10000": "10000",
@@ -1527,6 +1528,9 @@
     "Delete failed models ({{count}})": "删除失败模型（{{count}}）",
     "Delete Field": "删除字段",
     "Delete group": "删除分组",
+    "Delete model pricing": "删除模型定价",
+    "Are you sure you want to delete the pricing for {{name}}? It will be removed from configured models.": "确定要删除模型「{{name}}」的价格配置吗？删除后将从已配置列表中移除。",
+    "Model pricing deleted successfully": "模型定价已成功删除",
     "Delete Header": "删请求头",
     "Delete Invalid": "删除无效",
     "Delete invalid codes": "删除无效代码",
@@ -2342,6 +2346,7 @@
     "First API request": "首个 API 请求",
     "First token": "首字",
     "First/Last Frame to Video": "首尾生视频",
+    "first {{count}} free": "前{{count}}张免费",
     "Fix Abilities": "修复渠道一致性",
     "Fix order": "修复顺序",
     "Fixed abilities: {{success}} succeeded, {{fails}} failed": "渠道一致性修复完成：{{success}} 个成功，{{fails}} 个失败",
