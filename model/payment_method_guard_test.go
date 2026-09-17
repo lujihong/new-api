@@ -179,7 +179,7 @@ func createEpayTestOrder(t *testing.T, userId int, tradeNo string, provider stri
 	topUp := TopUp{
 		UserId:          userId,
 		Amount:          2,
-		Money:           10.0,
+		Money:           2.0,
 		TradeNo:         tradeNo,
 		PaymentMethod:   "alipay",
 		PaymentProvider: provider,
