@@ -17,6 +17,7 @@ type AICCAssetGroupOwnership struct {
 	UserID    int       `gorm:"not null;uniqueIndex:idx_aicc_group_owner,priority:1" json:"user_id"`
 	GroupID   string    `gorm:"size:255;not null;uniqueIndex:idx_aicc_group_owner,priority:2;uniqueIndex:idx_aicc_group_id" json:"group_id"`
 	GroupType string    `gorm:"size:32;not null" json:"group_type"`
+	ChannelID int       `gorm:"default:0;index:idx_aicc_group_channel" json:"channel_id"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -28,6 +29,7 @@ type AICCAssetOwnership struct {
 	UserID    int       `gorm:"not null;uniqueIndex:idx_aicc_asset_owner,priority:1" json:"user_id"`
 	AssetID   string    `gorm:"size:255;not null;uniqueIndex:idx_aicc_asset_owner,priority:2;uniqueIndex:idx_aicc_asset_id" json:"asset_id"`
 	GroupID   string    `gorm:"size:255;not null" json:"group_id"`
+	ChannelID int       `gorm:"default:0;index:idx_aicc_asset_channel" json:"channel_id"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -42,7 +44,7 @@ func validateAICCResourceID(value string) (string, error) {
 	return value, nil
 }
 
-func RecordAICCAssetGroupOwnership(userID int, groupID, groupType string) error {
+func RecordAICCAssetGroupOwnership(userID int, groupID, groupType string, channelID ...int) error {
 	groupID, err := validateAICCResourceID(groupID)
 	if err != nil {
 		return err
@@ -50,8 +52,12 @@ func RecordAICCAssetGroupOwnership(userID int, groupID, groupType string) error 
 	if userID <= 0 {
 		return errors.New("invalid AICC owner")
 	}
+	cID := 0
+	if len(channelID) > 0 {
+		cID = channelID[0]
+	}
 	return DB.Transaction(func(tx *gorm.DB) error {
-		row := AICCAssetGroupOwnership{UserID: userID, GroupID: groupID, GroupType: groupType}
+		row := AICCAssetGroupOwnership{UserID: userID, GroupID: groupID, GroupType: groupType, ChannelID: cID}
 		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&row).Error; err != nil {
 			return err
 		}
@@ -66,7 +72,7 @@ func RecordAICCAssetGroupOwnership(userID int, groupID, groupType string) error 
 	})
 }
 
-func RecordAICCAssetOwnership(userID int, assetID, groupID string) error {
+func RecordAICCAssetOwnership(userID int, assetID, groupID string, channelID ...int) error {
 	assetID, err := validateAICCResourceID(assetID)
 	if err != nil {
 		return err
@@ -78,8 +84,12 @@ func RecordAICCAssetOwnership(userID int, assetID, groupID string) error {
 	if userID <= 0 {
 		return errors.New("invalid AICC owner")
 	}
+	cID := 0
+	if len(channelID) > 0 {
+		cID = channelID[0]
+	}
 	return DB.Transaction(func(tx *gorm.DB) error {
-		row := AICCAssetOwnership{UserID: userID, AssetID: assetID, GroupID: groupID}
+		row := AICCAssetOwnership{UserID: userID, AssetID: assetID, GroupID: groupID, ChannelID: cID}
 		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&row).Error; err != nil {
 			return err
 		}
@@ -92,6 +102,18 @@ func RecordAICCAssetOwnership(userID int, assetID, groupID string) error {
 		}
 		return nil
 	})
+}
+
+func GetAICCAssetChannelID(assetID string) (int, error) {
+	assetID, err := validateAICCResourceID(assetID)
+	if err != nil {
+		return 0, err
+	}
+	var row AICCAssetOwnership
+	if err := DB.Select("channel_id").Where("asset_id = ?", assetID).First(&row).Error; err != nil {
+		return 0, err
+	}
+	return row.ChannelID, nil
 }
 
 func UserOwnsAICCAssetGroup(userID int, groupID string) (bool, error) {

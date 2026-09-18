@@ -191,9 +191,14 @@ func validateAICCAssetReferencesForChannel(userID int, request any, channelID *i
 	if err := model.ValidateUserAICCAssetIDs(userID, assetIDs); err != nil {
 		return err
 	}
-	if len(assetIDs) > 0 && channelID != nil {
-		return service.ValidateAICCVideoChannel(*channelID)
-	}
+		if len(assetIDs) > 0 && channelID != nil {
+			for _, id := range assetIDs {
+				if err := service.ValidateAICCVideoAssetChannel(*channelID, id); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
 	return nil
 }
 

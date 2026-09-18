@@ -137,8 +137,62 @@ func TestAICCConfigDefaults(t *testing.T) {
 	cfg := service.GetAICCConfig()
 	assert.Empty(t, cfg.AccessKeyID)
 	assert.Empty(t, cfg.AccessKeySecret)
-	assert.Equal(t, "https://ecloud.10086.cn", cfg.Endpoint)
-	assert.Equal(t, "CIDC-CORE-00", cfg.PoolID)
+		assert.Equal(t, "https://ecloud.10086.cn", cfg.Endpoint)
+		assert.Equal(t, "CIDC-CORE-00", cfg.PoolID)
+	}
+
+func TestValidateAICCVideoAssetChannel(t *testing.T) {
+	previousDB := model.DB
+	db, err := gorm.Open(sqlite.Open(t.TempDir()+"/aicc-validate.db"), &gorm.Config{})
+	require.NoError(t, err)
+	model.DB = db
+	t.Cleanup(func() { model.DB = previousDB; sqlDB, _ := db.DB(); _ = sqlDB.Close() })
+	require.NoError(t, db.AutoMigrate(&model.AICCAssetGroupOwnership{}, &model.AICCAssetOwnership{}, &model.Channel{}))
+
+	t.Setenv("AICC_ACCESS_KEY_ID", "ak-mobile-1")
+	t.Setenv("AICC_ACCESS_KEY_SECRET", "sk-mobile-1")
+
+	// Channel 1: Mobile Cloud 1
+	ch1 := model.Channel{
+		Id:        101,
+		Type:      54,
+		Name:      "移动云-专线1",
+		Status:    common.ChannelStatusEnabled,
+		OtherInfo: `{"access_key_id":"ak-mobile-1","access_key_secret":"sk-mobile-1"}`,
+	}
+	require.NoError(t, db.Create(&ch1).Error)
+
+	// Channel 2: Mobile Cloud 2 (different AK/SK)
+	ch2 := model.Channel{
+		Id:        102,
+		Type:      54,
+		Name:      "移动云-专线2",
+		Status:    common.ChannelStatusEnabled,
+		OtherInfo: `{"access_key_id":"ak-mobile-2","access_key_secret":"sk-mobile-2"}`,
+	}
+	require.NoError(t, db.Create(&ch2).Error)
+
+	// Asset 1 bound to Channel 101
+	require.NoError(t, model.RecordAICCAssetOwnership(1, "asset-chan-101", "group-1", 101))
+	// Asset 2 legacy (channel_id = 0)
+	require.NoError(t, model.RecordAICCAssetOwnership(1, "asset-chan-legacy", "group-1", 0))
+
+	// 1. Target Channel 101 with Asset 101 should succeed
+	err = service.ValidateAICCVideoAssetChannel(101, "asset-chan-101")
+	assert.NoError(t, err)
+
+	// 2. Target Channel 102 with Asset 101 (mismatched channel) should be rejected
+	err = service.ValidateAICCVideoAssetChannel(102, "asset-chan-101")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "不匹配")
+
+	// 3. Legacy asset on Channel 101 matches global credentials
+	err = service.ValidateAICCVideoAssetChannel(101, "asset-chan-legacy")
+	assert.NoError(t, err)
+
+	// 4. Legacy asset on Channel 102 fails credential match
+	err = service.ValidateAICCVideoAssetChannel(102, "asset-chan-legacy")
+	require.Error(t, err)
 }
 
 func TestAICCH5SessionLiveCall(t *testing.T) {

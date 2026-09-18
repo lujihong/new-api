@@ -87,6 +87,11 @@ func GetAICCConfig() AICCConfig {
 
 // ValidateAICCVideoChannel prevents account-scoped assets from falling back to an unrelated provider.
 func ValidateAICCVideoChannel(channelID int) error {
+	return ValidateAICCVideoAssetChannel(channelID, "")
+}
+
+// ValidateAICCVideoAssetChannel validates that the target video channel matches the asset's registered mobile channel.
+func ValidateAICCVideoAssetChannel(channelID int, assetID string) error {
 	if channelID <= 0 || model.DB == nil {
 		return errors.New("AICC asset channel is unavailable")
 	}
@@ -98,7 +103,17 @@ func ValidateAICCVideoChannel(channelID int) error {
 	if err != nil || ch == nil || ch.Status != common.ChannelStatusEnabled {
 		return errors.New("AICC asset channel is unavailable")
 	}
-	if gjson.Get(ch.OtherInfo, "access_key_id").String() != cfg.AccessKeyID || gjson.Get(ch.OtherInfo, "access_key_secret").String() != cfg.AccessKeySecret {
+	ak := gjson.Get(ch.OtherInfo, "access_key_id").String()
+	sk := gjson.Get(ch.OtherInfo, "access_key_secret").String()
+
+	if strings.TrimSpace(assetID) != "" {
+		assetChannelID, err := model.GetAICCAssetChannelID(assetID)
+		if err == nil && assetChannelID > 0 && assetChannelID != channelID {
+			return fmt.Errorf("人物素材所属移动云渠道(ID: %d)与当前视频任务渠道(ID: %d)不匹配，移动云真人肖像不支持跨渠道使用", assetChannelID, channelID)
+		}
+	}
+
+	if ak != cfg.AccessKeyID || sk != cfg.AccessKeySecret {
 		return errors.New("人物素材仅可使用其所属移动云账号渠道，请选择移动云渠道后重试")
 	}
 	return nil
