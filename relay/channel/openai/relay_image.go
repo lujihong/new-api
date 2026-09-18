@@ -47,7 +47,7 @@ func OpenaiImageHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.
 	// 写入新的 response body
 	service.IOCopyBytesGracefully(c, resp, responseBody)
 
-	normalizeOpenAIUsage(&usageResp.Usage)
+	normalizeOpenAIUsage(&usageResp.Usage, responseBody)
 	applyUsagePostProcessing(info, &usageResp.Usage, responseBody)
 	return &usageResp.Usage, nil
 }
@@ -60,7 +60,7 @@ func OpenaiImageHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.
 // previous additive (+=) behavior while avoiding any future double-counting if
 // both field sets are ever populated. Do not reuse this on chat/embedding paths
 // without revisiting the overwrite semantics.
-func normalizeOpenAIUsage(usage *dto.Usage) {
+func normalizeOpenAIUsage(usage *dto.Usage, responseBody []byte) {
 	if usage == nil {
 		return
 	}
@@ -69,6 +69,13 @@ func normalizeOpenAIUsage(usage *dto.Usage) {
 	}
 	if usage.OutputTokens != 0 {
 		usage.CompletionTokens = usage.OutputTokens
+		// Images output is image tokens unless the supplier explicitly provides
+		// a breakdown. Check the JSON field: the DTO's value struct cannot
+		// distinguish missing details from an explicit empty/all-zero object.
+		if !gjson.GetBytes(responseBody, "usage.completion_tokens_details").Exists() {
+			usage.CompletionTokenDetails.ImageTokens = usage.OutputTokens
+			usage.CompletionTokenDetails.TextTokens = 0
+		}
 	}
 	if usage.InputTokensDetails != nil {
 		usage.PromptTokensDetails = usage.InputTokensDetails.Clone()
@@ -114,7 +121,7 @@ func OpenaiImageStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp 
 			Usage dto.Usage `json:"usage"`
 		}
 		if err := common.Unmarshal(raw, &chunk); err == nil {
-			normalizeOpenAIUsage(&chunk.Usage)
+			normalizeOpenAIUsage(&chunk.Usage, raw)
 			if service.ValidUsage(&chunk.Usage) {
 				usage = &chunk.Usage
 			}
@@ -233,7 +240,7 @@ func openaiImageJSONAsStreamHandler(c *gin.Context, info *relaycommon.RelayInfo,
 	if oaiError := usageResp.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
 		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
 	}
-	normalizeOpenAIUsage(&usageResp.Usage)
+	normalizeOpenAIUsage(&usageResp.Usage, responseBody)
 	applyUsagePostProcessing(info, &usageResp.Usage, responseBody)
 
 	imageCount := gjson.GetBytes(responseBody, "data.#").Int()

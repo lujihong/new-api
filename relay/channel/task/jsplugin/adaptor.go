@@ -302,6 +302,66 @@ func (a *TaskAdaptor) ExtractUsageFactsValidated(c *gin.Context, info *relaycomm
 	return facts, nil
 }
 
+// TaskBillingRequestParameters uses the saved submit context from extractUsage,
+// without reparsing the inbound request or inventing protocol aliases/defaults.
+func (a *TaskAdaptor) TaskBillingRequestParameters(c *gin.Context, info *relaycommon.RelayInfo) (map[string]any, error) {
+	if a.routeRequest != nil {
+		c = nil
+	}
+	body, ok := a.submitContext(c, info)["requestBody"].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("task billing request body must be an object")
+	}
+	var params map[string]any
+	for _, key := range []string{"resolution", "resolution_name", "size", "seconds", "duration", "aspect_ratio"} {
+		value, exists := body[key]
+		if !exists || value == nil {
+			continue
+		}
+		if text, ok := value.(string); ok {
+			// Pricing labels are short tokens. Exclude URL syntax, whitespace,
+			// control characters and request payloads even under allowed keys.
+			if len(text) > 64 || !utf8.ValidString(text) || strings.Contains(text, "://") {
+				return nil, fmt.Errorf("invalid task billing parameter %s", key)
+			}
+			for _, ch := range text {
+				if !((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || strings.ContainsRune("._:-*", ch)) {
+					return nil, fmt.Errorf("invalid task billing parameter %s", key)
+				}
+			}
+			if key == "seconds" || key == "duration" {
+				if err := validateUsageLimit(text, relaycommon.MaxTaskDurationSeconds, true); err != nil {
+					return nil, fmt.Errorf("invalid task billing parameter %s: %w", key, err)
+				}
+			}
+		} else {
+			number, numeric := usageNumber(value, false)
+			limit := common.MaxQuota
+			if key == "seconds" || key == "duration" {
+				limit = relaycommon.MaxTaskDurationSeconds
+			}
+			if !numeric || validateUsageNumberLimit(number, limit) != nil {
+				return nil, fmt.Errorf("invalid task billing parameter %s", key)
+			}
+		}
+		if params == nil {
+			params = make(map[string]any)
+		}
+		params[key] = value
+	}
+	// The OpenAI-compatible task clients use both names. Billing expressions
+	// intentionally read the canonical `resolution` field, so normalize the
+	// legacy form only when the canonical field was not supplied.
+	if params != nil {
+		if _, hasResolution := params["resolution"]; !hasResolution {
+			if resolutionName, hasResolutionName := params["resolution_name"]; hasResolutionName {
+				params["resolution"] = resolutionName
+			}
+		}
+	}
+	return params, nil
+}
+
 func (a *TaskAdaptor) AdjustBillingOnSubmit(info *relaycommon.RelayInfo, taskData []byte) map[string]float64 {
 	var data any
 	if err := common.Unmarshal(taskData, &data); err != nil {

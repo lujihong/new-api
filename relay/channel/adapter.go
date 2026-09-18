@@ -117,6 +117,13 @@ type TaskContentRequestProvider interface {
 	BuildContentRequest(task *model.Task, artifactKey string, clientRequest TaskArtifactClientRequest) (*TaskContentRequest, error)
 }
 
+// TaskBillingRequestParametersProvider optionally supplies detached, validated
+// pricing scalars from the same normalized request used by the usage hook.
+// Keys retain their protocol meaning; absent parameters must remain nil.
+type TaskBillingRequestParametersProvider interface {
+	TaskBillingRequestParameters(c *gin.Context, info *relaycommon.RelayInfo) (map[string]any, error)
+}
+
 type TaskUsageFactsProvider interface {
 	ExtractUsageFacts(c *gin.Context, info *relaycommon.RelayInfo) map[string]any
 }

@@ -80,6 +80,9 @@ type BillingSnapshot struct {
 	ExprVersion               int            `json:"expr_version"`
 	TaskUsageBilling          bool           `json:"task_usage_billing,omitempty"`
 	UsageFacts                map[string]any `json:"usage_facts,omitempty"`
+	// TaskRequestParams contains only validated pricing scalars, never the full request.
+	// Keep nil for historical snapshots and clone when copying a task snapshot.
+	TaskRequestParams map[string]any `json:"task_request_params,omitempty"`
 }
 
 // TieredResult holds everything needed after running tiered settlement.

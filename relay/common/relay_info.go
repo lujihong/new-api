@@ -184,6 +184,11 @@ type RelayInfo struct {
 	TieredBillingSnapshot *billingexpr.BillingSnapshot
 	BillingRequestInput   *billingexpr.RequestInput
 	BillingImageCount     *int
+	// UsageMissing marks a successful image response whose upstream usage was
+	// absent or contained no billable input/output. It is deliberately kept on
+	// RelayInfo so settlement can distinguish an unknown charge from a real
+	// zero-token result without inventing placeholder tokens.
+	UsageMissing bool
 	// ImageRequestCount is the effective quantity sent on the current attempt;
 	// ImageQuotaBeforeGroup is the frozen legacy estimate before request ratios.
 	ImageRequestCount     int

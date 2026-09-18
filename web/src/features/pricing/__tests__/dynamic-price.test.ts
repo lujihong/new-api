@@ -32,6 +32,7 @@ import {
   isUnconfiguredTaskUsageModel,
 } from '../lib/dynamic-price'
 import { isTokenBasedModel } from '../lib/model-helpers'
+import { parseVideoSecondPrice } from '../lib/video-second-price'
 import type { PricingModel } from '../types'
 
 function pricingModel(overrides: Partial<PricingModel>): PricingModel {
@@ -53,6 +54,51 @@ const summaryOptions = {
   usdExchangeRate: 6,
   groupRatioMultiplier: 2,
 }
+
+describe('read-only video second price projection', () => {
+  const standard = 'has(param("resolution"),"480") ? tier("480p",(vs==0?5:vs)*0.05):tier("720p",(vs==0?5:vs)*0.07)'
+  const high = 'has(param("resolution"),"1080") ? tier("1080p",(vs==0?5:vs)*0.25):has(param("resolution"),"480") ? tier("480p",(vs==0?5:vs)*0.08):tier("720p",(vs==0?5:vs)*0.14)'
+
+  test.each([
+    [standard, [{ label: '480p', pricePerSecond: 0.05 }, { label: '720p', pricePerSecond: 0.07 }]],
+    [high, [{ label: '1080p', pricePerSecond: 0.25 }, { label: '480p', pricePerSecond: 0.08 }, { label: '720p', pricePerSecond: 0.14 }]],
+  ])('recognizes the complete linear resolution tree %s', (expression, tiers) => {
+    expect(parseVideoSecondPrice(expression)).toEqual({ tiers, fallbackSeconds: 5, fallbackResolution: '720p' })
+    expect(parseVideoSecondPrice(` \n${expression.replaceAll('*', ' * ')}\n `)?.tiers).toEqual(tiers)
+  })
+
+  test.each([
+    '',
+    'tier("video", vs * 0.1)',
+    `${standard} * 2`,
+    `${standard}|||when(header("x") has "fast") * 2`,
+    `${standard}; globalThis.alert(1)`,
+    standard.replace('0.05', '-0.05'),
+    standard.replace('0.05', '1e999'),
+    standard.replace('0.05', '9'.repeat(400)),
+    standard.replace('0.05', '0.05 * vs'),
+    standard.replace('(vs==0?5:vs)', 'max(vs,5)'),
+    standard.replace('vs==0', 'vs<=0'),
+    standard.replace('?5:', '?6:'),
+    standard.replace('"480p"', '"1080p"'),
+    standard.replace('"resolution"', '"reso lution"'),
+    standard.replace('"480"', '"720"'),
+    standard.replace('vs==', 'v s=='),
+    standard.replace('tier("720p",', 'tier("720p", 2 + '),
+    `true ? ${standard} : tier("other", vs*99)`,
+  ])('does not infer second prices from unknown or unsafe source %s', (expression) => {
+    expect(parseVideoSecondPrice(expression)).toBeNull()
+  })
+
+  test('retains configured zero coefficients and does not promote video seconds into token prices', () => {
+    expect(parseVideoSecondPrice(standard.replace('0.05', '0'))?.tiers[0].pricePerSecond).toBe(0)
+    const model = pricingModel({ billing_mode: 'tiered_expr', billing_expr: standard })
+    for (const tokenUnit of ['K', 'M'] as const) {
+      expect(getDynamicPricingSummary(model, { tokenUnit })?.entries).toEqual([])
+      expect(model.billing_expr).toBe(standard)
+    }
+  })
+})
 
 describe('expression price summaries', () => {
   test('keeps request prices unchanged by token units and separates mixed billing units', () => {

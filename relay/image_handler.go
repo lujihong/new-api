@@ -21,6 +21,27 @@ import (
 	"github.com/tidwall/sjson"
 )
 
+// isImageUsageMissing distinguishes absent/zero usage from a real reported
+// token count. A zero usage object is still treated as missing because the
+// image APIs may legally omit billing fields; explicit non-zero modality
+// details are retained as authoritative usage.
+func isImageUsageMissing(usage *dto.Usage) bool {
+	if usage == nil {
+		return true
+	}
+	return !dto.HasOpenAIUsageTokens(usage)
+}
+
+func markImageUsageMissing(info *relaycommon.RelayInfo, usage *dto.Usage) bool {
+	if !isImageUsageMissing(usage) {
+		return false
+	}
+	if info != nil {
+		info.UsageMissing = true
+	}
+	return true
+}
+
 func ImageHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types.NewAPIError) {
 	info.InitChannelMeta(c)
 	info.BillingImageCount = nil
@@ -156,24 +177,29 @@ func ImageHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *type
 		}
 	}
 
-	usage, newAPIError := adaptor.DoResponse(c, httpResp, info)
-	if newAPIError != nil {
-		// reset status code 重置状态码
-		service.ResetStatusCode(newAPIError, statusCodeMappingStr)
-		return newAPIError
-	}
+		usage, newAPIError := adaptor.DoResponse(c, httpResp, info)
+		if newAPIError != nil {
+			// reset status code 重置状态码
+			service.ResetStatusCode(newAPIError, statusCodeMappingStr)
+			return newAPIError
+		}
 
-	imageN := uint(1)
-	if request.N != nil {
-		imageN = *request.N
-	}
+		// A successful image response is not necessarily accompanied by usage
+		// (for example gpt-image-2). Never manufacture token 1: that turns an
+		// unknown charge into a false input-token fact. Keep the response path
+		// successful, mark the billing state for settlement/audit, and retain the
+		// already reserved amount as the conservative charge.
+		imageUsage, ok := usage.(*dto.Usage)
+		if !ok || imageUsage == nil {
+			logger.LogWarn(c, fmt.Sprintf("successful image response returned invalid usage type %T; marking usage_missing", usage))
+			imageUsage = &dto.Usage{}
+		}
+		markImageUsageMissing(info, imageUsage)
 
-	if usage.(*dto.Usage).TotalTokens == 0 {
-		usage.(*dto.Usage).TotalTokens = 1
-	}
-	if usage.(*dto.Usage).PromptTokens == 0 {
-		usage.(*dto.Usage).PromptTokens = 1
-	}
+		imageN := uint(1)
+		if request.N != nil {
+			imageN = *request.N
+		}
 
 	quality := request.Quality
 	if quality == "" {
@@ -192,6 +218,6 @@ func ImageHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *type
 		logContent = append(logContent, fmt.Sprintf("生成数量 %d", imageN))
 	}
 
-	service.PostTextConsumeQuota(c, info, usage.(*dto.Usage), logContent)
+	service.PostTextConsumeQuota(c, info, imageUsage, logContent)
 	return nil
 }

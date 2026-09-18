@@ -16,11 +16,20 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { act, render, screen, waitFor, within } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import {
+  act,
+  render as rtlRender,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import type { ReactNode } from 'react'
 import { afterEach, expect, it, vi } from 'vitest'
 
 import { api } from '@/lib/api'
+import { statusQueryOptions } from '@/lib/status-query'
 import { useAuthStore } from '@/stores/auth-store'
 
 import { ChangePasswordDialog } from '../components/dialogs/change-password-dialog'
@@ -41,6 +50,19 @@ afterEach(() => {
   vi.unstubAllGlobals()
   useAuthStore.getState().auth.reset('idle')
 })
+
+function render(ui: ReactNode) {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
+  client.setQueryData(statusQueryOptions.queryKey, {
+    passkey_rp_ids: ['example.com'],
+    passkey_origins: '',
+  } as Record<string, unknown>)
+  return rtlRender(
+    <QueryClientProvider client={client}>{ui}</QueryClientProvider>
+  )
+}
 
 it('requires verification after username confirmation and cancels without deleting the account', async () => {
   vi.spyOn(api, 'get').mockResolvedValue({

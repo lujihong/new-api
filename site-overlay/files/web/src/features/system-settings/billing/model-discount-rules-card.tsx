@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import {
@@ -45,18 +45,26 @@ import {
   addDiscountRule,
   discountRows,
   parseDiscountRules,
+  parseDiscountPercent,
+  replaceDiscountRule,
   removeDiscountRule,
   type DiscountRow,
   type ModelDiscountRules,
 } from './model-discount-rules'
 
 export function ModelDiscountRulesCard() {
-  const { t } = useTranslation()
   const userId = useAuthStore((state) => state.auth.user?.id)
+  const sid = useAuthStore((state) => state.auth.session?.sid)
+  return <SessionDiscountCard key={JSON.stringify([userId, sid])} userId={userId} sid={sid} />
+}
+
+function SessionDiscountCard({ userId, sid }: { userId?: number; sid?: string }) {
+  const { t } = useTranslation()
   const [reload, setReload] = useState(0)
+  const [refreshing, setRefreshing] = useState(false)
 
   const query = useQuery({
-    queryKey: ['model-discount-rules', userId],
+    queryKey: ['model-discount-rules', userId, sid],
     queryFn: async () => {
       const response = await getSystemOptions()
       if (!response.success || !Array.isArray(response.data)) {
@@ -84,10 +92,10 @@ export function ModelDiscountRulesCard() {
             </div>
             <CardDescription className='text-xs text-stone-500 dark:text-stone-400'>
               {t(
-                'Model discount explanation',
+                'Model discount group price explanation',
                 {
                   defaultValue:
-                    '未设置规则时折扣为 1（原价）。个人规则优先于客户组规则，不叠乘；折扣乘以现有有效组倍率，仅匹配精确模型名。',
+                    '客户组来自用户管理中的分组，用户指平台上的具体账号。个人规则优先于客户组规则，两者不叠乘；所选折扣再乘以现有有效组倍率。100% 表示不额外优惠，不会取消原有组价。仅匹配客户请求中的精确模型名。',
                 }
               )}
             </CardDescription>
@@ -105,18 +113,27 @@ export function ModelDiscountRulesCard() {
           <div role='alert' className='flex flex-col items-center justify-center gap-3 py-8 text-center text-sm text-destructive'>
             <AlertCircle className='size-6 text-destructive/80' />
             <p>{t('Failed to load settings')}</p>
-            <Button variant='outline' size='sm' onClick={() => void query.refetch()}>
-              {t('Retry')}
-            </Button>
+            {query.data ? <p>后台读取失败，当前草稿和未加入的输入已保留。可使用下方刷新按钮重试。</p> : (
+              <Button variant='outline' size='sm' disabled={query.isFetching} onClick={() => void query.refetch()}>
+                {t('Retry')}
+              </Button>
+            )}
           </div>
         )}
-        {query.data && !query.isError && (
+        {query.data && (
           <DiscountEditor
-            key={`${userId}:${reload}`}
+            key={reload}
             initialRules={query.data}
+            refreshing={refreshing}
+            fetching={query.isFetching}
             onReload={async () => {
-              const result = await query.refetch()
-              if (result.isSuccess) setReload((value) => value + 1)
+              setRefreshing(true)
+              try {
+                const result = await query.refetch()
+                if (result.isSuccess) setReload((value) => value + 1)
+              } finally {
+                setRefreshing(false)
+              }
             }}
           />
         )}
@@ -127,14 +144,27 @@ export function ModelDiscountRulesCard() {
 
 function DiscountEditor(props: {
   initialRules: ModelDiscountRules
+  refreshing: boolean
+  fetching: boolean
   onReload: () => Promise<void>
 }) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const userId = useAuthStore((state) => state.auth.user?.id)
+  const sid = useAuthStore((state) => state.auth.session?.sid)
+  const mounted = useRef(true)
+  const operation = useRef(false)
+  useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false }
+  }, [])
+  function isCurrentSession() {
+    const auth = useAuthStore.getState().auth
+    return mounted.current && auth.user?.id === userId && auth.session?.sid === sid
+  }
 
   const [rules, setRules] = useState(props.initialRules)
-  const [saved, setSaved] = useState(JSON.stringify(props.initialRules))
+  const [saved, setSaved] = useState(() => JSON.stringify(props.initialRules))
   const [kind, setKind] = useState<DiscountRow['kind']>('groups')
   const [owner, setOwner] = useState('')
   const [model, setModel] = useState('')
@@ -145,11 +175,27 @@ function DiscountEditor(props: {
   const [error, setError] = useState('')
   const [tableFilter, setTableFilter] = useState('')
   const [deleting, setDeleting] = useState<DiscountRow | null>(null)
+  const [editing, setEditing] = useState<DiscountRow | null>(null)
+  const [freeRule, setFreeRule] = useState<{ row: DiscountRow; replace: boolean } | null>(null)
+  const [tablePage, setTablePage] = useState(1)
 
-  const dirty = JSON.stringify(rules) !== saved
+  const serializedRules = useMemo(() => JSON.stringify(rules), [rules])
+  const dirty = serializedRules !== saved
+  const formDirty = editing !== null || kind !== 'groups' || owner !== '' || model !== '' || percent !== '100' || keyword !== ''
+  function clearForm() {
+    setEditing(null)
+    setKind('groups')
+    setOwner('')
+    setModel('')
+    setPercent('100')
+    setKeyword('')
+    setSearch('')
+    setPage(1)
+    setFreeRule(null)
+  }
 
   const groups = useQuery({
-    queryKey: ['model-discount-groups', userId],
+    queryKey: ['model-discount-groups', userId, sid],
     queryFn: async () => {
       const response = await getGroups()
       if (!response.success || !Array.isArray(response.data)) {
@@ -160,7 +206,7 @@ function DiscountEditor(props: {
   })
 
   const models = useQuery({
-    queryKey: ['model-discount-models', userId],
+    queryKey: ['model-discount-models', userId, sid],
     queryFn: async () => {
       const { data: response } = await api.get<{
         success: boolean
@@ -175,7 +221,7 @@ function DiscountEditor(props: {
   })
 
   const users = useQuery({
-    queryKey: ['model-discount-users', userId, search, page],
+    queryKey: ['model-discount-users', userId, sid, search, page],
     enabled: kind === 'users',
     queryFn: async () => {
       const response = await searchUsers({ keyword: search, p: page, page_size: 20 })
@@ -187,12 +233,11 @@ function DiscountEditor(props: {
   })
 
   const save = useMutation({
-    mutationFn: async (next: ModelDiscountRules) => {
-      const value = JSON.stringify(next)
+    mutationFn: async ({ value, baseline }: { value: string; baseline: string }) => {
       const response = await updateSystemOption({
         key: 'ModelDiscountRules',
         value,
-        expected_value: saved,
+        expected_value: baseline,
       })
       if (!response.success) {
         throw new Error(response.message || t('Failed to update setting'))
@@ -200,14 +245,24 @@ function DiscountEditor(props: {
       return value
     },
     onSuccess: (value) => {
+      if (!isCurrentSession()) return
       setSaved(value)
-      queryClient.setQueryData(['model-discount-rules', userId], JSON.parse(value))
+      queryClient.setQueryData(['model-discount-rules', userId, sid], JSON.parse(value))
       void queryClient.invalidateQueries({ queryKey: ['pricing'] })
       void queryClient.invalidateQueries({ queryKey: ['system-options'] })
       toast.success(t('Setting updated successfully'))
     },
-    onError: (failure: Error) => setError(failure.message),
+    onError: (failure: Error) => { if (isCurrentSession()) setError(failure.message) },
+    onSettled: () => { operation.current = false },
   })
+  const busy = save.isPending || props.refreshing
+
+  async function reloadRules() {
+    if (operation.current || busy || props.fetching || freeRule || deleting) return
+    if ((dirty || formDirty) && !window.confirm('重新加载将放弃未保存的草稿和表单输入，读取服务器最新规则。继续？')) return
+    operation.current = true
+    try { await props.onReload() } finally { operation.current = false }
+  }
 
   const ownerOptions = useMemo(() => {
     if (kind === 'groups') {
@@ -224,16 +279,15 @@ function DiscountEditor(props: {
   const catalogLoading =
     groups.isPending || models.isPending || (kind === 'users' && users.isPending)
 
-  const factor = Number(percent) / 100
-  const validPercent =
-    percent.trim() !== '' && Number.isFinite(factor) && factor >= 0 && factor <= 1
+  const factor = parseDiscountPercent(percent)
+  const validPercent = factor !== null
 
   const discountText = (value: number) =>
     value === 1
-      ? t('Original price', { defaultValue: '原价' })
+      ? t('No extra model discount', { defaultValue: '沿用组价' })
       : t('Discount tenths', {
           defaultValue: '{{value}}折',
-          value: Number((value * 10).toFixed(4)),
+          value: Number((value * 10).toPrecision(15)),
         })
 
   const discountBadgeVariant = useMemo((): 'outline' | 'secondary' | 'default' => {
@@ -242,26 +296,38 @@ function DiscountEditor(props: {
     return 'default'
   }, [factor])
 
+  function commitRule(row: DiscountRow, replace: boolean) {
+    if (busy || operation.current || !isCurrentSession()) return
+    try {
+      setRules(replace ? replaceDiscountRule(rules, row) : addDiscountRule(rules, row))
+      clearForm()
+    } catch {
+      setError('该客户与模型已有规则或原行已不存在，请检查规则清单。')
+    }
+  }
+
   function addRule() {
+    if (busy || operation.current || freeRule) return
     setError('')
-    if (
-      !validPercent ||
-      !ownerOptions.some((option) => option.value === owner) ||
-      !models.data?.includes(model)
-    ) {
+    if (factor === null) return
+    if (!editing && (!ownerOptions.some((option) => option.value === owner) || !models.data?.includes(model))) return
+    const row = editing ? { ...editing, factor } : { kind, owner, model, factor }
+    if (factor === 0) {
+      setFreeRule({ row, replace: editing !== null })
       return
     }
-    try {
-      setRules(addDiscountRule(rules, { kind, owner, model, factor }))
-      setModel('')
-      setPercent('100')
-    } catch {
-      setError(
-        t('Duplicate model discount', {
-          defaultValue: '该客户与模型已有规则，请先明确删除原行后再新增。',
-        })
-      )
-    }
+    commitRule(row, editing !== null)
+  }
+
+  function editRule(row: DiscountRow) {
+    if (busy || operation.current || formDirty || freeRule) return
+    setError('')
+    setEditing(row)
+    setKind(row.kind)
+    setOwner(row.owner)
+    setModel(row.model)
+    // Preserve historical precision. Invalid legacy precision must be explicitly changed or cancelled.
+    setPercent(String(Number((row.factor * 100).toPrecision(15))))
   }
 
   const allRows = useMemo(() => discountRows(rules), [rules])
@@ -276,41 +342,45 @@ function DiscountEditor(props: {
     )
   }, [allRows, tableFilter])
 
+  const pageCount = Math.max(1, Math.ceil(filteredRows.length / 25))
+  const visiblePage = Math.min(tablePage, pageCount)
+  const visibleRows = filteredRows.slice((visiblePage - 1) * 25, visiblePage * 25)
+
   const PRESET_DISCOUNTS = [
-    { label: '95折', value: '95' },
+    { label: '9.5折', value: '95' },
     { label: '9折', value: '90' },
-    { label: '85折', value: '85' },
+    { label: '8.5折', value: '85' },
     { label: '8折', value: '80' },
     { label: '7折', value: '70' },
     { label: '5折', value: '50' },
     { label: '免费 (0折)', value: '0' },
-    { label: '原价 (100%)', value: '100' },
+    { label: '沿用组价 (100%)', value: '100' },
   ]
 
   return (
     <div className='space-y-6'>
-      <FormNavigationGuard when={dirty} />
+      <FormNavigationGuard when={dirty || formDirty} />
 
       {/* 规则配置操作面板 */}
       <fieldset
-        disabled={save.isPending}
+        disabled={busy}
         className='rounded-xl border border-stone-200/80 bg-stone-50/50 p-4.5 dark:border-stone-800 dark:bg-stone-900/40 space-y-4'
       >
         <div className='flex items-center justify-between border-b border-stone-200/70 pb-3 dark:border-stone-800'>
           <div className='flex items-center gap-2 text-xs font-bold text-stone-800 dark:text-stone-200'>
             <Plus className='size-4 text-emerald-600 dark:text-emerald-400' />
-            <span>新增专属折扣配置</span>
+            <span>{editing ? '编辑规则比例（客户与模型已锁定）' : '新增专属折扣配置'}</span>
           </div>
           <div className='flex items-center gap-2'>
             <span className='text-[11px] text-stone-400'>
-              已配置 {allRows.length} 条有效规则
+              当前草稿 {allRows.length} 条 · 保存后生效
             </span>
           </div>
         </div>
 
         <div className='grid gap-4 md:grid-cols-3'>
           {/* 规则类型 */}
-          <div className='space-y-1.5'>
+          <div className='min-w-0 space-y-1.5'>
             <Label className='text-xs font-medium text-stone-700 dark:text-stone-300'>
               {t('Rule type', { defaultValue: '规则类型' })}
             </Label>
@@ -318,6 +388,7 @@ function DiscountEditor(props: {
               openOnFocus={false}
               aria-label={t('Rule type', { defaultValue: '规则类型' })}
               value={kind}
+              disabled={busy || editing !== null}
               options={[
                 { value: 'groups', label: t('Customer group', { defaultValue: '客户组' }) },
                 { value: 'users', label: t('User') },
@@ -330,14 +401,14 @@ function DiscountEditor(props: {
           </div>
 
           {/* 目标客户 / 客户组 */}
-          <div className='space-y-1.5'>
+          <div className='min-w-0 space-y-1.5'>
             <div className='flex items-center justify-between'>
               <Label className='text-xs font-medium text-stone-700 dark:text-stone-300'>
                 {t('Discount owner', { defaultValue: '折扣客户' })}
               </Label>
               {kind === 'users' && users.data && (
                 <span className='text-[10px] text-stone-400'>
-                  第 {page} / {Math.max(1, Math.ceil(users.data.total / 20))} 页 · 共 {users.data.total} 人
+                  下拉仅当前页（每页 20 人）：第 {page} / {Math.max(1, Math.ceil(users.data.total / 20))} 页 · 共 {users.data.total} 人
                 </span>
               )}
             </div>
@@ -350,9 +421,10 @@ function DiscountEditor(props: {
                     placeholder={t('Search users', { defaultValue: '搜索用户...' })}
                     aria-label={t('Search users', { defaultValue: '搜索用户' })}
                     value={keyword}
+                    disabled={editing !== null}
                     onChange={(event) => setKeyword(event.target.value)}
                     onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
+                      if (e.key === 'Enter' && !e.nativeEvent.isComposing && e.keyCode !== 229) {
                         setSearch(keyword)
                         setPage(1)
                         setOwner('')
@@ -364,6 +436,7 @@ function DiscountEditor(props: {
                     variant='outline'
                     size='sm'
                     className='h-8 shrink-0 px-2.5 text-xs'
+                    disabled={editing !== null}
                     onClick={() => {
                       setSearch(keyword)
                       setPage(1)
@@ -381,7 +454,7 @@ function DiscountEditor(props: {
                   options={ownerOptions}
                   value={owner}
                   onValueChange={(value) => setOwner(value ?? '')}
-                  disabled={catalogLoading || catalogFailed}
+                  disabled={busy || editing !== null || catalogLoading || catalogFailed}
                 />
                 {users.data && users.data.total > 20 && (
                   <div className='flex items-center justify-end gap-1.5 pt-0.5 text-xs'>
@@ -390,7 +463,7 @@ function DiscountEditor(props: {
                       variant='ghost'
                       size='sm'
                       className='h-6 px-2 text-[11px]'
-                      disabled={page <= 1}
+                      disabled={busy || editing !== null || page <= 1}
                       onClick={() => {
                         setPage(page - 1)
                         setOwner('')
@@ -404,7 +477,7 @@ function DiscountEditor(props: {
                       variant='ghost'
                       size='sm'
                       className='h-6 px-2 text-[11px]'
-                      disabled={page * 20 >= users.data.total}
+                      disabled={busy || editing !== null || page * 20 >= users.data.total}
                       onClick={() => {
                         setPage(page + 1)
                         setOwner('')
@@ -424,13 +497,13 @@ function DiscountEditor(props: {
                 options={ownerOptions}
                 value={owner}
                 onValueChange={(value) => setOwner(value ?? '')}
-                disabled={catalogLoading || catalogFailed}
+                disabled={busy || editing !== null || catalogLoading || catalogFailed}
               />
             )}
           </div>
 
           {/* 精确模型选择 */}
-          <div className='space-y-1.5'>
+          <div className='min-w-0 space-y-1.5'>
             <Label className='text-xs font-medium text-stone-700 dark:text-stone-300'>
               {t('Exact model', { defaultValue: '精确模型' })}
             </Label>
@@ -441,7 +514,7 @@ function DiscountEditor(props: {
               options={(models.data ?? []).map((value) => ({ value, label: value }))}
               value={model}
               onValueChange={(value) => setModel(value ?? '')}
-              disabled={catalogLoading || catalogFailed}
+              disabled={busy || editing !== null || catalogLoading || catalogFailed}
             />
           </div>
         </div>
@@ -473,10 +546,9 @@ function DiscountEditor(props: {
               <Input
                 id='model-discount-percent'
                 className='h-9 font-mono pr-7 text-sm font-bold'
-                type='number'
-                min={0}
-                max={100}
-                step='any'
+                type='text'
+                inputMode='decimal'
+                aria-describedby='discount-percent-help'
                 value={percent}
                 onChange={(event) => setPercent(event.target.value)}
                 aria-invalid={!validPercent}
@@ -509,14 +581,18 @@ function DiscountEditor(props: {
               <Button
                 type='button'
                 onClick={addRule}
-                disabled={!owner || !model || !validPercent || catalogLoading || catalogFailed}
+                disabled={busy || !!freeRule || !owner || !model || !validPercent || (!editing && (catalogLoading || catalogFailed))}
                 className='h-9 gap-1.5 text-xs font-semibold'
               >
                 <Plus className='size-3.5' />
-                {t('Add rule', { defaultValue: '新增规则' })}
+                {editing ? '更新草稿规则' : t('Add rule', { defaultValue: '新增规则' })}
               </Button>
+              {formDirty && <Button type='button' variant='ghost' disabled={busy} onClick={clearForm}>{editing ? '取消编辑' : '清空输入'}</Button>}
             </div>
           </div>
+          <p id='discount-percent-help' role={validPercent ? undefined : 'alert'} className={cn('text-sm', validPercent ? 'text-muted-foreground' : 'text-destructive')}>
+            {validPercent ? '支持 0–100，最多六位小数。0 表示免费，100 表示沿用现有组价。' : '请输入 0–100 的普通十进制数，最多六位小数，不接受科学计数法。'}
+          </p>
         </div>
 
         {catalogLoading && (
@@ -561,16 +637,15 @@ function DiscountEditor(props: {
             </span>
           </div>
 
-          {allRows.length > 3 && (
-            <div className='w-48'>
-              <Input
-                placeholder='筛选规则或模型...'
-                value={tableFilter}
-                onChange={(e) => setTableFilter(e.target.value)}
-                className='h-8 text-xs'
-              />
-            </div>
-          )}
+          <div className='w-full sm:w-56'>
+            <Input
+              aria-label='筛选规则或模型'
+              placeholder='筛选规则或模型...'
+              value={tableFilter}
+              onChange={(e) => { setTableFilter(e.target.value); setTablePage(1) }}
+              className='h-8 text-xs'
+            />
+          </div>
         </div>
 
         {allRows.length === 0 ? (
@@ -579,8 +654,8 @@ function DiscountEditor(props: {
               <Sparkles className='size-5' />
             </div>
             <p className='text-sm font-medium text-stone-600 dark:text-stone-400'>
-              {t('No model discounts', {
-                defaultValue: '暂无折扣规则，所有客户保持原价（×1）。',
+              {t('No additional model discounts', {
+                defaultValue: '暂无折扣规则，沿用现有组价，不额外优惠（×1）。',
               })}
             </p>
             <p className='mt-0.5 text-xs text-stone-400'>
@@ -600,10 +675,11 @@ function DiscountEditor(props: {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filteredRows.map((row) => {
+                {filteredRows.length === 0 && <TableRow><TableCell colSpan={5} className='py-8 text-center text-muted-foreground'>没有匹配的规则，请修改筛选条件。</TableCell></TableRow>}
+                {visibleRows.map((row) => {
                   const isUser = row.kind === 'users'
                   return (
-                    <TableRow key={`${row.kind}-${row.owner}-${row.model}`} className='transition-colors'>
+                    <TableRow key={JSON.stringify([row.kind, row.owner, row.model])} className='transition-colors'>
                       <TableCell className='py-2.5'>
                         <Badge
                           variant='secondary'
@@ -618,28 +694,30 @@ function DiscountEditor(props: {
                           {isUser ? t('User') : t('Customer group', { defaultValue: '客户组' })}
                         </Badge>
                       </TableCell>
-                      <TableCell className='py-2.5 font-medium text-xs text-stone-900 dark:text-stone-100'>
+                      <TableCell className='min-w-0 py-2.5 font-medium text-sm text-stone-900 dark:text-stone-100 break-words'>
                         {row.owner}
                       </TableCell>
-                      <TableCell className='py-2.5'>
+                      <TableCell className='min-w-0 py-2.5'>
                         <code className='rounded bg-stone-100 px-1.5 py-0.5 font-mono text-xs font-semibold text-stone-800 dark:bg-stone-800 dark:text-stone-200 break-all'>
                           {row.model}
                         </code>
                       </TableCell>
                       <TableCell className='py-2.5 text-right font-mono text-xs'>
                         <span className='font-bold text-emerald-600 dark:text-emerald-400'>
-                          {Number((row.factor * 100).toFixed(4))}% · {discountText(row.factor)}
+                          {Number((row.factor * 100).toPrecision(15))}% · {discountText(row.factor)}
                         </span>
                         <span className='text-stone-400 ml-1.5 text-[11px]'>
                           (×{row.factor})
                         </span>
                       </TableCell>
                       <TableCell className='py-2.5 text-right'>
+                        <Button type='button' variant='ghost' size='sm' disabled={busy || formDirty || !!freeRule} onClick={() => editRule(row)}>编辑</Button>
                         <Button
                           type='button'
                           variant='ghost'
                           size='sm'
-                          onClick={() => setDeleting(row)}
+                          disabled={busy || formDirty || !!freeRule}
+                          onClick={() => { if (!busy && !operation.current) setDeleting(row) }}
                           className='h-7 px-2 text-xs text-stone-400 hover:text-destructive hover:bg-destructive/10'
                         >
                           <Trash2 className='size-3 mr-1' />
@@ -653,6 +731,13 @@ function DiscountEditor(props: {
             </Table>
           </div>
         )}
+        {filteredRows.length > 25 && <div className='flex flex-wrap items-center justify-between gap-2 text-sm'>
+          <span>共 {filteredRows.length} 条 · 第 {visiblePage} / {pageCount} 页（每页 25 条）</span>
+          <div className='flex gap-2'>
+            <Button type='button' variant='outline' size='sm' aria-label='规则上一页' disabled={visiblePage <= 1} onClick={() => setTablePage(visiblePage - 1)}>上一页</Button>
+            <Button type='button' variant='outline' size='sm' aria-label='规则下一页' disabled={visiblePage >= pageCount} onClick={() => setTablePage(visiblePage + 1)}>下一页</Button>
+          </div>
+        </div>}
       </div>
 
       {error && (
@@ -665,15 +750,8 @@ function DiscountEditor(props: {
               variant='outline'
               size='sm'
               className='h-7 text-xs'
-              onClick={() => {
-                if (
-                  window.confirm(
-                    '重新加载将放弃未保存的草稿，读取服务器最新规则。继续？'
-                  )
-                ) {
-                  void props.onReload()
-                }
-              }}
+              disabled={busy || props.fetching || !!freeRule || !!deleting}
+              onClick={() => void reloadRules()}
             >
               重新加载最新规则
             </Button>
@@ -693,7 +771,7 @@ function DiscountEditor(props: {
           ) : (
             <span className='inline-flex items-center gap-1.5 text-xs text-stone-400'>
               <Check className='size-3 text-emerald-500' />
-              所有规则已同步至云端
+              当前规则无未保存修改
             </span>
           )}
         </div>
@@ -704,20 +782,26 @@ function DiscountEditor(props: {
               type='button'
               variant='ghost'
               size='sm'
-              disabled={save.isPending}
-              onClick={() => setRules(JSON.parse(saved))}
+              disabled={busy}
+              onClick={() => {
+                if (operation.current || !window.confirm('放弃尚未保存的规则修改和表单输入？')) return
+                setRules(JSON.parse(saved)); clearForm(); setError('')
+              }}
               className='h-8 text-xs'
             >
               放弃更改
             </Button>
           )}
+          <Button type='button' variant='outline' disabled={busy || props.fetching || !!freeRule || !!deleting} onClick={() => void reloadRules()}>刷新规则</Button>
           <Button
             type='button'
             onClick={() => {
+              if (operation.current || busy || formDirty || freeRule || deleting || !isCurrentSession()) return
+              operation.current = true
               setError('')
-              save.mutate(rules)
+              save.mutate({ value: serializedRules, baseline: saved })
             }}
-            disabled={!dirty || save.isPending}
+            disabled={!dirty || busy || formDirty || !!freeRule || !!deleting}
             className='h-8 px-4 text-xs font-semibold'
           >
             {save.isPending ? t('Saving...') : t('Save all rules', { defaultValue: '保存全部规则' })}
@@ -725,6 +809,16 @@ function DiscountEditor(props: {
         </div>
       </div>
 
+      {formDirty && <p role='status' className='text-sm text-muted-foreground'>表单尚未加入规则清单，请先新增、更新或取消，再保存全部规则。</p>}
+      <ConfirmDialog
+        open={freeRule !== null}
+        onOpenChange={(open) => { if (!open) setFreeRule(null) }}
+        title='确认设置免费规则？'
+        desc={freeRule ? `${freeRule.row.kind === 'users' ? '用户' : '客户组'} ${freeRule.row.owner} · ${freeRule.row.model} 将设为 0%，保存全部规则后生效。上游仍可能产生采购费用。` : ''}
+        confirmText='确认免费'
+        disabled={busy}
+        handleConfirm={() => { if (freeRule && !busy && !operation.current) { commitRule(freeRule.row, freeRule.replace); setFreeRule(null) } }}
+      />
       <ConfirmDialog
         open={deleting !== null}
         onOpenChange={(open) => {
@@ -738,8 +832,13 @@ function DiscountEditor(props: {
         }
         confirmText={t('Delete')}
         destructive
+        disabled={busy}
         handleConfirm={() => {
-          if (deleting) setRules(removeDiscountRule(rules, deleting))
+          if (busy || operation.current || !isCurrentSession()) return
+          if (deleting) {
+            setRules(removeDiscountRule(rules, deleting))
+            setTablePage(Math.min(visiblePage, Math.max(1, Math.ceil((filteredRows.length - 1) / 25))))
+          }
           setDeleting(null)
         }}
       />

@@ -371,12 +371,13 @@ func migrateDB() error {
 		&CasbinRule{},
 		&AuthzRole{},
 		&AICCAssetGroupOwnership{},
-			&AICCAssetOwnership{},
-			&AICCAuthSession{},
-			&AICCRecoveryAudit{},
-			&PurchasePriceVersion{},
-			&UpstreamAttempt{},
-		)
+		&AICCAssetOwnership{},
+		&AICCAuthSession{},
+		&AICCRecoveryAudit{},
+		&PurchasePriceVersion{},
+		&UpstreamAttempt{},
+		&BillingOperation{},
+	)
 	if err != nil {
 		return err
 	}

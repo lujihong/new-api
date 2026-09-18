@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"testing"
 
@@ -209,6 +210,82 @@ func TestRecalculateTaskQuotaByTokensSnapshot(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRecalculateTaskQuotaByTokensSnapshotZeroModelDiscountVersion(t *testing.T) {
+	// Only v1 is implemented. Neither an unversioned object nor an unknown
+	// version proves that a zero model ratio was intentionally saved.
+	for _, version := range []int{1, 0, -1, 2} {
+		for _, groupRatio := range []float64{0, 0.5, 1} {
+			for _, preConsumed := range []int{0, 500} {
+				t.Run(fmt.Sprintf("version=%d/group=%g/pre=%d", version, groupRatio, preConsumed), func(t *testing.T) {
+					truncate(t)
+					preserveTaskSnapshotRatios(t)
+					require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(`{"test-model":0}`))
+					require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(fmt.Sprintf(`{"default":%g}`, groupRatio)))
+					require.NoError(t, ratio_setting.UpdateGroupGroupRatioByJSONString(`{}`))
+
+					const userID, channelID, tokenID, initialQuota = 83, 83, 83, 10000
+					seedUser(t, userID, initialQuota-preConsumed)
+					seedChannel(t, channelID)
+					seedToken(t, tokenID, userID, "snapshot-zero-model-test", initialQuota-preConsumed)
+					seedChargedAccounting(t, userID, channelID, tokenID, preConsumed, 1)
+					task := makeTask(userID, channelID, preConsumed, tokenID, BillingSourceWallet, 0)
+					task.PrivateData.BillingContext = &model.TaskBillingContext{
+						ModelRatio: 0, GroupRatio: groupRatio, OriginModelName: "test-model",
+						ModelDiscount: &model.TaskModelDiscountSnapshot{
+							Version: version, OriginModel: "test-model", BaseGroupRatio: 1,
+							Factor: groupRatio, Source: "global", Revision: "submission-test",
+						},
+					}
+					require.NoError(t, task.Insert())
+
+					// Live prices become positive only after the snapshot was persisted.
+					require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(`{"test-model":7}`))
+					require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":3}`))
+					require.NoError(t, ratio_setting.UpdateGroupGroupRatioByJSONString(`{"default":{"default":5}}`))
+					var loaded model.Task
+					require.NoError(t, model.DB.First(&loaded, task.ID).Error)
+					require.Equal(t, task.PrivateData.BillingContext, loaded.PrivateData.BillingContext)
+
+					wantQuota := 3500 // Legacy fallback: 100 tokens * current model 7 * same-group 5.
+					if version == 1 {
+						wantQuota = 0
+					}
+					// Replay with a fresh DB read also verifies no duplicate money movement or log.
+					for attempt := 0; attempt < 2; attempt++ {
+						require.NoError(t, model.DB.First(&loaded, task.ID).Error)
+						assert.True(t, RecalculateTaskQuotaByTokens(context.Background(), &loaded, 100))
+						assert.Equal(t, wantQuota, loaded.Quota)
+						assert.Equal(t, wantQuota, getTaskQuota(t, task.ID))
+						assert.Equal(t, initialQuota-wantQuota, getUserQuota(t, userID))
+						assert.Equal(t, initialQuota-wantQuota, getTokenRemainQuota(t, tokenID))
+						assert.Equal(t, wantQuota, getTokenUsedQuota(t, tokenID))
+						used, requests := getUserUsageAccounting(t, userID)
+						assert.Equal(t, wantQuota, used)
+						assert.Equal(t, 1, requests)
+						assert.Equal(t, int64(wantQuota), getChannelUsedQuota(t, channelID))
+						if wantQuota == preConsumed {
+							assert.Zero(t, countLogs(t))
+						} else {
+							assert.Equal(t, int64(1), countLogs(t))
+							log := getLastLog(t)
+							require.NotNil(t, log)
+							assert.Equal(t, userID, log.UserId)
+							assert.Equal(t, tokenID, log.TokenId)
+							if wantQuota > preConsumed {
+								assert.Equal(t, model.LogTypeConsume, log.Type)
+								assert.Equal(t, wantQuota-preConsumed, log.Quota)
+							} else {
+								assert.Equal(t, model.LogTypeRefund, log.Type)
+								assert.Equal(t, preConsumed-wantQuota, log.Quota)
+							}
+						}
+					}
+				})
+			}
+		}
 	}
 }
 

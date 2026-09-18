@@ -23,6 +23,7 @@ import { useTranslation } from 'react-i18next'
 import { CopyButton } from '@/components/copy-button'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardFooter, CardHeader } from '@/components/ui/card'
+import { Table, TableBody, TableCell, TableHead, TableRow } from '@/components/ui/table'
 import { getLobeIcon } from '@/lib/lobe-icon'
 import { cn } from '@/lib/utils'
 import { useSystemConfigStore } from '@/stores/system-config-store'
@@ -33,9 +34,11 @@ import {
   getCardExamplePrice,
   getDynamicDisplayGroupRatio,
   getDynamicPriceUnitLabelKey,
+  formatTaskUsageUnitPrice,
   getDynamicPricingSummary,
   isUnconfiguredTaskUsageModel,
 } from '../lib/dynamic-price'
+import { parseVideoSecondPrice } from '../lib/video-second-price'
 import { parseTags } from '../lib/filters'
 import { isTokenBasedModel } from '../lib/model-helpers'
 import { formatPrice, formatRequestPrice } from '../lib/price'
@@ -107,17 +110,103 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [props.model, dynamicPriceOptions, currency]
   )
+  const videoSecondPrice = useMemo(
+    () =>
+      props.model.billing_mode === 'tiered_expr' &&
+      !props.model.billing_plugin_variants?.length &&
+      !Object.keys(props.model.billing_usage_schema ?? {}).length
+        ? parseVideoSecondPrice(props.model.billing_expr ?? '')
+        : null,
+    [props.model]
+  )
   let priceSummary: ReactNode
-  if (dynamicSummary) {
+  if (videoSecondPrice) {
+    priceSummary = (
+      <div className='col-span-full min-w-0'>
+        <Table aria-label={t('Pricing')} withContainer={false}>
+          <TableBody className='[&>tr]:h-8'>
+            {videoSecondPrice.tiers.map((tier) => (
+              <TableRow key={tier.label}>
+                <TableHead scope='row' className='h-8 px-1 text-xs font-normal'>
+                  {tier.label}
+                </TableHead>
+                <TableCell className='p-1 text-right font-mono text-sm font-semibold'>
+                  {formatTaskUsageUnitPrice(
+                    tier.pricePerSecond,
+                    dynamicPriceOptions
+                  )}{' '}
+                  <span className='text-muted-foreground text-xs font-normal'>
+                    / {t('s')}
+                  </span>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+        <span className='text-muted-foreground mt-1 block text-xs'>
+          {t('Unspecified duration uses 5 seconds as the billing fallback.', { defaultValue: '计费表达式在时长为零时按 5 秒兜底，不代表上游默认时长。' })}
+        </span>
+        <span className='text-muted-foreground block text-xs'>
+          {t('Unmatched resolution uses the final 720p branch; this does not claim upstream support.', { defaultValue: '未匹配的分辨率按末尾 720p 分支计价；可用规格以接口支持为准。' })}
+        </span>
+        <details className='border-border/70 mt-2 rounded-md border px-2 py-1'>
+          <summary className='text-foreground cursor-pointer text-xs font-semibold'>
+            {t('Billing rules', { defaultValue: '计费规则' })}
+          </summary>
+          <code className='text-muted-foreground mt-1 block break-all font-mono text-[11px]'>
+            {props.model.billing_expr}
+          </code>
+        </details>
+      </div>
+    )
+  } else if (dynamicSummary) {
     if (dynamicSummary.isSpecialExpression) {
       priceSummary = (
         <div className='col-span-full min-w-0'>
           <span className='text-warning'>
-            {t('Special billing expression')}
+            {t('Billed according to actual parameters', { defaultValue: '按实际参数计费' })}
           </span>
-          <code className='text-muted-foreground mt-1 line-clamp-2 block font-mono text-xs break-all'>
-            {dynamicSummary.rawExpression}
-          </code>
+          <details className='border-border/70 mt-2 rounded-md border px-2 py-1'>
+            <summary className='text-foreground cursor-pointer text-xs font-semibold'>
+              {t('Billing rules', { defaultValue: '计费规则' })}
+            </summary>
+            <code className='text-muted-foreground mt-1 block break-all font-mono text-[11px]'>
+              {dynamicSummary.rawExpression}
+            </code>
+          </details>
+        </div>
+      )
+    } else if (dynamicSummary.entries.some((entry) =>
+      ['img', 'img_o', 'img_cr'].includes(entry.variable?.key ?? '')
+    )) {
+      priceSummary = (
+        <div className='col-span-full min-w-0'>
+          <Table aria-label={t('Pricing')} withContainer={false}>
+            <TableBody className='[&>tr]:h-8'>
+              {dynamicSummary.entries.map((entry) => {
+                const unitKey = getDynamicPriceUnitLabelKey(entry)
+                return (
+                  <TableRow key={entry.key}>
+                    <TableHead scope='row' className='h-8 px-1 whitespace-normal text-muted-foreground'>
+                      {t(entry.shortLabel)}
+                    </TableHead>
+                    <TableCell className='p-1 text-right'>
+                      {entry.formattedRange ?? entry.formatted}{' '}
+                      <span className='text-muted-foreground'>
+                        / {unitKey ? t(unitKey) : tokenUnitLabel}
+                      </span>
+                    </TableCell>
+                  </TableRow>
+                )
+              })}
+            </TableBody>
+          </Table>
+          {dynamicSummary.isTimePricing && (
+            <span className='text-muted-foreground text-xs'>{t('Current period price')}</span>
+          )}
+          {dynamicSummary.isMixedBilling && (
+            <span className='text-muted-foreground block text-xs'>{t('Token or per-call pricing')}</span>
+          )}
         </div>
       )
     } else if (dynamicSummary.primaryEntries.length > 0) {

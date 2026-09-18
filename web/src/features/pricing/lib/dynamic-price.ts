@@ -131,7 +131,13 @@ export function getDynamicPriceUnitLabelKey(
   return null
 }
 
-const PRIMARY_DYNAMIC_FIELDS = new Set(['inputPrice', 'outputPrice'])
+const PRIMARY_DYNAMIC_FIELDS = new Set([
+  'inputPrice',
+  'outputPrice',
+  'imagePrice',
+  'imageOutputPrice',
+  'imageCachePrice',
+])
 
 function isTaskPricingTier(tier: DynamicPricingTier): tier is ParsedTaskTier {
   return (

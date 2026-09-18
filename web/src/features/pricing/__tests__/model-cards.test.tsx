@@ -392,7 +392,77 @@ describe('model cards', () => {
     expect(screen.getByText(/480p · 5s ≈/)).toBeVisible()
   })
 
-  it('keeps an unrecognized expression visible with the special billing message', () => {
+  it.each([
+    {
+      expression: 'tier("standard", p * 5 + cr * 1.25 + img * 8 + img_o * 30)',
+      rows: [['Input', '$5'], ['Cache Read', '$1.25'], ['Image In', '$8'], ['Image Out', '$30']],
+      absent: ['Output', 'Image Cache'],
+    },
+    {
+      expression: 'tier("standard", p * 5 + cr * 1.25 + img * 8 + img_cr * 2 + c * 30)',
+      rows: [['Input', '$5'], ['Output', '$30'], ['Cache Read', '$1.25'], ['Image In', '$8'], ['Image Cache', '$2']],
+      absent: ['Image Out'],
+    },
+  ])('shows every configured image price without inventing missing categories: $expression', ({ expression, rows, absent }) => {
+    render(<ModelCard model={pricingModel({ billing_mode: 'tiered_expr', billing_expr: expression })} onClick={vi.fn()} tokenUnit='M' />)
+    const table = screen.getByRole('table', { name: 'Pricing' })
+    expect(within(table).getAllByRole('row')).toHaveLength(rows.length)
+    for (const [label, price] of rows) {
+      expect(within(table).getByRole('row', { name: `${label} ${price} / 1M` })).toBeVisible()
+    }
+    for (const label of absent) expect(within(table).queryByText(label)).not.toBeInTheDocument()
+  })
+
+  it.each([
+    { expression: 'has(param("resolution"),"480") ? tier("480p",(vs==0?5:vs)*0.05):tier("720p",(vs==0?5:vs)*0.07)', prices: [['480p', '$0.05'], ['720p', '$0.07']] },
+    { expression: 'has(param("resolution"),"1080") ? tier("1080p",(vs==0?5:vs)*0.25):has(param("resolution"),"480") ? tier("480p",(vs==0?5:vs)*0.08):tier("720p",(vs==0?5:vs)*0.14)', prices: [['1080p', '$0.25'], ['480p', '$0.08'], ['720p', '$0.14']] },
+  ])('shows configured second tiers and honest fallbacks without exposing source: $expression', async ({ expression, prices }) => {
+    const props = { model: pricingModel({ billing_mode: 'tiered_expr', billing_expr: expression }), onClick: vi.fn() }
+    const { rerender } = render(<ModelCard {...props} tokenUnit='K' />)
+    for (const [label, price] of prices) {
+      expect(screen.getByRole('row', { name: `${label} ${price} / s` })).toBeVisible()
+    }
+    expect(screen.getByText(/时长为零时按 5 秒兜底/)).toBeVisible()
+    expect(screen.getByText(/未匹配的分辨率按末尾 720p/)).toBeVisible()
+    expect(screen.getByText(expression)).not.toBeVisible()
+    expect(screen.queryByText(/1K|1M/)).not.toBeInTheDocument()
+    rerender(<ModelCard {...props} tokenUnit='M' />)
+    for (const [label, price] of prices) {
+      expect(screen.getByRole('row', { name: `${label} ${price} / s` })).toBeVisible()
+    }
+    await userEvent.setup().click(screen.getByText('计费规则'))
+    expect(screen.getByText(expression)).toBeVisible()
+    expect(props.onClick).not.toHaveBeenCalled()
+  })
+
+  it.each([1, 7])('applies CNY exchange rate %s and final group price once for video', (exchangeRate) => {
+    useSystemConfigStore.getState().setConfig({ currency: { ...DEFAULT_CURRENCY_CONFIG, quotaDisplayType: 'CNY', usdExchangeRate: exchangeRate } })
+    const model = pricingModel({
+      billing_mode: 'tiered_expr',
+      billing_expr: 'has(param("resolution"),"480") ? tier("480p",(vs==0?5:vs)*0.05):tier("720p",(vs==0?5:vs)*0.07)',
+      group_ratio: { default: 2 },
+      model_group_ratio: { default: 0.5 },
+    })
+    const props = { model, onClick: vi.fn(), selectedGroup: 'default', usdExchangeRate: exchangeRate }
+    const { rerender } = render(<ModelCard {...props} tokenUnit='M' />)
+    for (const ratio of [0, 0.5, 1]) {
+      const adjusted = { ...model, model_group_ratio: { default: ratio } }
+      rerender(<ModelCard {...props} model={adjusted} tokenUnit='K' />)
+      expect(screen.getByRole('row', { name: `480p ¥${Number((0.05 * ratio * exchangeRate).toFixed(6))} / s` })).toBeVisible()
+      rerender(<ModelCard {...props} model={adjusted} tokenUnit='M' showRechargePrice priceRate={3} />)
+      expect(screen.getByRole('row', { name: `480p ¥${Number((0.05 * ratio * 3).toFixed(6))} / s` })).toBeVisible()
+    }
+  })
+
+  it('keeps the -1k model price per request at 0.04 regardless of token unit', () => {
+    const props = { model: pricingModel({ model_name: 'gpt-image-2-1k', quota_type: 1, model_price: 0.04 }), onClick: vi.fn() }
+    const { rerender } = render(<ModelCard {...props} tokenUnit='K' />)
+    expect(screen.getByText(/\$0.04/)).toHaveTextContent(/\$0.04\s*\/\s*request/)
+    rerender(<ModelCard {...props} tokenUnit='M' />)
+    expect(screen.getByText(/\$0.04/)).toHaveTextContent(/\$0.04\s*\/\s*request/)
+  })
+
+  it('keeps an unrecognized expression collapsed but available for audit', async () => {
     const expression =
       'u("seconds") > 30 ? tier("long", u("seconds") * 0.3) : tier("short", u("seconds") * 0.4)'
     render(
@@ -405,7 +475,10 @@ describe('model cards', () => {
         onClick={vi.fn()}
       />
     )
-    expect(screen.getByText('Special billing expression')).toBeVisible()
+    expect(screen.getByText('按实际参数计费')).toBeVisible()
+    expect(screen.getByText(expression)).not.toBeVisible()
+    expect(screen.getByText(expression).closest('details')).not.toHaveAttribute('open')
+    await userEvent.setup().click(screen.getByText('计费规则'))
     expect(screen.getByText(expression)).toBeVisible()
   })
 

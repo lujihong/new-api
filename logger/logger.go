@@ -29,7 +29,11 @@ const maxLogCount = 1000000
 
 var logCount atomic.Int64
 var setupLogLock sync.Mutex
-var setupLogWorking bool
+
+// setupLogWorking is the single rotation scheduling latch. Only the goroutine
+// that successfully claims it may clear it; contenders must never clean up
+// another goroutine's rotation.
+var setupLogWorking atomic.Bool
 var currentLogPath string
 var currentLogPathMu sync.RWMutex
 var currentLogFile *os.File
@@ -41,18 +45,25 @@ func GetCurrentLogPath() string {
 }
 
 func SetupLogger() {
-	defer func() {
-		setupLogWorking = false
-	}()
+	if !setupLogWorking.CompareAndSwap(false, true) {
+		log.Println("setup log is already working")
+		return
+	}
+	setupLoggerOwned()
+}
+
+// setupLoggerOwned performs one rotation for the caller that owns the
+// scheduling latch. The latch is released only by this owner, even when the
+// setup mutex is unavailable or file logging is disabled.
+func setupLoggerOwned() {
+	defer setupLogWorking.Store(false)
 	if *common.LogDir != "" {
 		ok := setupLogLock.TryLock()
 		if !ok {
 			log.Println("setup log is already working")
 			return
 		}
-		defer func() {
-			setupLogLock.Unlock()
-		}()
+		defer setupLogLock.Unlock()
 		logPath := filepath.Join(*common.LogDir, fmt.Sprintf("oneapi-%s.log", time.Now().Format("20060102150405")))
 		fd, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
@@ -114,11 +125,12 @@ func logHelper(ctx context.Context, level string, msg string) {
 	_, _ = fmt.Fprintf(writer, "[%s] %v | %s | %s \n", level, now.Format("2006/01/02 - 15:04:05"), id, msg)
 	common.LogWriterMu.RUnlock()
 	count := logCount.Add(1)
-	if count > maxLogCount && !setupLogWorking {
+	if count > maxLogCount && setupLogWorking.CompareAndSwap(false, true) {
 		logCount.Store(0)
-		setupLogWorking = true
 		gopool.Go(func() {
-			SetupLogger()
+			// logHelper already owns the latch; bypass SetupLogger's claim
+			// step so this owner performs and releases the rotation.
+			setupLoggerOwned()
 		})
 	}
 }

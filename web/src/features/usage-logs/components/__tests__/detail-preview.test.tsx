@@ -28,6 +28,7 @@ import { I18nextProvider } from 'react-i18next'
 import { afterAll, afterEach, beforeEach, expect, test, vi } from 'vitest'
 
 import en from '@/i18n/locales/en.json'
+import { pricingQueryKey } from '@/features/pricing/api'
 import {
   DEFAULT_CURRENCY_CONFIG,
   useSystemConfigStore,
@@ -107,7 +108,7 @@ beforeEach(async () => {
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   client.setQueryData(['status'], {}, { updatedAt: Date.now() + 60_000 })
   client.setQueryData(
-    ['pricing'],
+    pricingQueryKey(),
     { data: [], vendors: [] },
     { updatedAt: Date.now() + 60_000 }
   )
@@ -244,7 +245,7 @@ test.each([
 ])(
   'task expression $tier shows its recorded unit price',
   ({ expression, tier, expected }) => {
-    client.setQueryData(['pricing'], {
+    client.setQueryData(pricingQueryKey(), {
       data: [
         {
           model_name: 'wan2.5-i2v-preview',
@@ -273,7 +274,7 @@ test.each([
 )
 
 test('task log prices use localized unit labels from pricing metadata', async () => {
-  client.setQueryData(['pricing'], {
+  client.setQueryData(pricingQueryKey(), {
     data: [
       {
         model_name: 'wan2.5-i2v-preview',
@@ -302,7 +303,7 @@ test('task log prices use localized unit labels from pricing metadata', async ()
 })
 
 test('task log prices select the executing provider’s schema', () => {
-  client.setQueryData(['pricing'], {
+  client.setQueryData(pricingQueryKey(), {
     data: [
       {
         model_name: 'wan2.5-i2v-preview',
@@ -341,7 +342,7 @@ test.each(['missing schema', 'unsupported expression', 'unknown tier'])(
   'task pricing with %s shows an explicit unavailable summary',
   (scenario) => {
     if (scenario !== 'missing schema') {
-      client.setQueryData(['pricing'], {
+      client.setQueryData(pricingQueryKey(), {
         data: [
           {
             model_name: 'wan2.5-i2v-preview',

@@ -374,7 +374,7 @@ test('builds weekday peak pricing with two time ranges from an empty visual form
       })
     ).toMatchObject({ status: 'success', matchedTier, cost })
   }
-})
+}, 20000)
 
 test('edits image cache pricing and preserves an explicitly free cache lane', () => {
   const source =

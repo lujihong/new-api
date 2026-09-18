@@ -34,6 +34,27 @@ export function addDiscountRule(rules: ModelDiscountRules, row: DiscountRow): Mo
   })
 }
 
+// New edits use explicit precision; existing rules are never silently rounded.
+export function parseDiscountPercent(value: string): number | null {
+  if (!/^\d+(?:\.\d{1,6})?$/.test(value.trim())) return null
+  const percent = Number(value)
+  if (!Number.isFinite(percent) || percent < 0 || percent > 100) return null
+  return percent / 100
+}
+
+export function replaceDiscountRule(rules: ModelDiscountRules, row: DiscountRow): ModelDiscountRules {
+  if (!Object.hasOwn(rules[row.kind]?.[row.owner] ?? {}, row.model)) {
+    throw new Error('The rule no longer exists')
+  }
+  return modelDiscountRulesSchema.parse({
+    ...rules,
+    [row.kind]: {
+      ...rules[row.kind],
+      [row.owner]: { ...rules[row.kind]?.[row.owner], [row.model]: row.factor },
+    },
+  })
+}
+
 export function removeDiscountRule(rules: ModelDiscountRules, row: DiscountRow): ModelDiscountRules {
   const next = structuredClone(rules)
   const owner = next[row.kind]?.[row.owner]

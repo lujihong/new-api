@@ -679,6 +679,7 @@ func truncateBase64(s string) string {
 func prepareTaskTieredUsage(task *model.Task, taskResult *relaycommon.TaskInfo) (billingexpr.TieredResult, error) {
 	bc := *task.PrivateData.BillingContext
 	snapshot := *bc.TieredSnapshot
+	snapshot.TaskRequestParams = maps.Clone(snapshot.TaskRequestParams)
 	usageFacts := make(map[string]any, len(snapshot.UsageFacts)+len(taskResult.UsageFacts))
 	maps.Copy(usageFacts, snapshot.UsageFacts)
 	maps.Copy(usageFacts, taskResult.UsageFacts)

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"maps"
 	"math"
@@ -17,6 +18,7 @@ import (
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 // LogTaskConsumption 记录任务消费日志和统计信息（仅记录，不涉及实际扣费）。
@@ -223,6 +225,10 @@ func RefundTaskQuota(ctx context.Context, task *model.Task, reason string) bool 
 
 	settlement, err := model.SettleTaskQuotaTransactional(ctx, task, 0)
 	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) && task.Quota == 0 {
+			logger.LogInfo(ctx, fmt.Sprintf("任务 %s 数据库无记录且传入配额为 0，无需退款", task.TaskID))
+			return true
+		}
 		logger.LogError(ctx, fmt.Sprintf("退款事务执行失败 task %s: %s", task.TaskID, err.Error()))
 		return false
 	}
@@ -337,8 +343,8 @@ func RecalculateTaskQuotaByTokens(ctx context.Context, task *model.Task, totalTo
 	}
 
 	var modelRatio, finalGroupRatio float64
-	if bc != nil && bc.ModelRatio > 0 {
-		// 提交时已确定最终组倍率；0 是合法免收费，不再读取当前配置。
+	if bc != nil && (bc.ModelRatio > 0 || (bc.ModelDiscount != nil && bc.ModelDiscount.Version == 1)) {
+		// v1 折扣快照可证明零模型倍率已保存；最终组倍率也允许为 0，不再读取当前配置。
 		modelRatio, finalGroupRatio = bc.ModelRatio, bc.GroupRatio
 	} else {
 		// 历史快照无版本/存在性标记，ModelRatio==0 不能证明提交时是免费模型。

@@ -451,7 +451,15 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 		extraContent = append(extraContent, fmt.Sprintf("Audio Input 花费 %s", logger.LogQuota(common.QuotaFromDecimal(q))))
 	}
 
-	if !summary.hasBillableUsage() {
+	if relayInfo.UsageMissing {
+		// Successful image responses may omit usage. Keep the amount reserved at
+		// request time as the conservative charge; do not invent token 1 or
+		// settle it as a zero-token failure. The log marker makes this state
+		// durable and allows a future usage reconciliation job to retry it.
+		summary.Quota = relayInfo.FinalPreConsumedQuota
+		extraContent = append(extraContent, "usage_missing")
+	}
+	if !relayInfo.UsageMissing && !summary.hasBillableUsage() {
 		extraContent = append(extraContent, "上游没有返回计费信息，无法扣费（可能是上游超时）")
 		logger.LogError(ctx, fmt.Sprintf("total tokens is 0, cannot consume quota, userId %d, channelId %d, tokenId %d, model %s， pre-consumed quota %d", relayInfo.UserId, relayInfo.ChannelId, relayInfo.TokenId, summary.ModelName, relayInfo.FinalPreConsumedQuota))
 	} else {

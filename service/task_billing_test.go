@@ -979,6 +979,7 @@ func TestRecalculate_PositiveDelta(t *testing.T) {
 	seedChargedAccounting(t, userID, channelID, tokenID, preConsumed, 1)
 
 	task := makeTask(userID, channelID, preConsumed, tokenID, BillingSourceWallet, 0)
+	require.NoError(t, model.DB.Create(task).Error)
 
 	RecalculateTaskQuota(ctx, task, actualQuota, "adaptor adjustment")
 
@@ -1018,6 +1019,7 @@ func TestRecalculate_NegativeDelta(t *testing.T) {
 	seedChargedAccounting(t, userID, channelID, tokenID, preConsumed, 1)
 
 	task := makeTask(userID, channelID, preConsumed, tokenID, BillingSourceWallet, 0)
+	require.NoError(t, model.DB.Create(task).Error)
 
 	RecalculateTaskQuota(ctx, task, actualQuota, "adaptor adjustment")
 
@@ -1117,6 +1119,7 @@ func TestRecalculate_Subscription_NegativeDelta(t *testing.T) {
 	seedChargedAccounting(t, userID, channelID, tokenID, preConsumed, 1)
 
 	task := makeTask(userID, channelID, preConsumed, tokenID, BillingSourceSubscription, subID)
+	require.NoError(t, model.DB.Create(task).Error)
 
 	RecalculateTaskQuota(ctx, task, actualQuota, "subscription over-charge")
 
@@ -1427,6 +1430,7 @@ func TestSettle_NonPerCallBilling_AppliesAdaptorAdjustment(t *testing.T) {
 	seedChannel(t, channelID)
 
 	task := makeTask(userID, channelID, preConsumed, tokenID, BillingSourceWallet, 0)
+	require.NoError(t, model.DB.Create(task).Error)
 	// PerCallBilling defaults to false
 
 	adaptor := &mockAdaptor{adjustReturn: adaptorQuota}
@@ -1453,8 +1457,9 @@ func TestSettle_TieredEvaluationFailureKeepsPreConsumedCharge(t *testing.T) {
 	const initialQuota = 10_000
 	seedUser(t, userID, initialQuota)
 
-	task := makeTask(userID, 0, preConsumed, 0, BillingSourceWallet, 0)
-	task.PrivateData.BillingContext.TieredSnapshot = &billingexpr.BillingSnapshot{
+				task := makeTask(userID, 0, preConsumed, 0, BillingSourceWallet, 0)
+				require.NoError(t, model.DB.Create(task).Error)
+				task.PrivateData.BillingContext.TieredSnapshot = &billingexpr.BillingSnapshot{
 		ExprString:       `tier("broken",`,
 		ExprHash:         billingexpr.ExprHashString(`tier("broken",`),
 		GroupRatio:       1,
@@ -1482,18 +1487,19 @@ func TestSettle_TieredFailureReturnsFalseForCallerRefund(t *testing.T) {
 	expression := `tier("base", u("seconds") + u("clips") * 10)`
 	task := makeTask(userID, 0, preConsumed, 0, BillingSourceWallet, 0)
 	task.Status = model.TaskStatusFailure
-	task.PrivateData.BillingContext.TieredSnapshot = &billingexpr.BillingSnapshot{
-		ExprString:       expression,
-		ExprHash:         billingexpr.ExprHashString(expression),
-		GroupRatio:       1,
-		QuotaPerUnit:     1,
-		ExprVersion:      1,
-		TaskUsageBilling: true,
-		UsageFacts:       map[string]any{"seconds": float64(5), "clips": float64(2)},
-		EstimatedTier:    "base",
-	}
+		task.PrivateData.BillingContext.TieredSnapshot = &billingexpr.BillingSnapshot{
+			ExprString:       expression,
+			ExprHash:         billingexpr.ExprHashString(expression),
+			GroupRatio:       1,
+			QuotaPerUnit:     1,
+			ExprVersion:      1,
+			TaskUsageBilling: true,
+			UsageFacts:       map[string]any{"seconds": float64(5), "clips": float64(2)},
+			EstimatedTier:    "base",
+		}
+		require.NoError(t, model.DB.Create(task).Error)
 
-	settled := settleTaskBillingOnComplete(
+		settled := settleTaskBillingOnComplete(
 		ctx,
 		&mockAdaptor{adjustReturn: 1},
 		task,
@@ -1529,6 +1535,7 @@ func TestSettle_TieredSuccessStillRecomputes(t *testing.T) {
 		UsageFacts:       map[string]any{"seconds": float64(5), "clips": float64(2)},
 		EstimatedTier:    "base",
 	}
+	require.NoError(t, model.DB.Create(task).Error)
 
 	settled := settleTaskBillingOnComplete(
 		ctx,
@@ -1602,6 +1609,7 @@ func TestSettle_TieredUsageFactsMergeCompletionOverSubmission(t *testing.T) {
 				UsageFacts:       submissionFacts,
 				EstimatedTier:    "base",
 			}
+			require.NoError(t, model.DB.Create(task).Error)
 
 			settled := settleTaskBillingOnComplete(
 				context.Background(),
@@ -1641,6 +1649,7 @@ func TestSettle_TieredSnapshotWriteBackUsesSettledFactsAndMatchedTier(t *testing
 
 	expression := `u("resolution") == "1080P" ? tier("1080P", u("seconds") * 10) : tier("720P", u("seconds") * 5)`
 	task := makeTask(userID, 0, preConsumed, 0, BillingSourceWallet, 0)
+	require.NoError(t, model.DB.Create(task).Error)
 	task.PrivateData.BillingContext.TieredSnapshot = &billingexpr.BillingSnapshot{
 		ExprString:       expression,
 		ExprHash:         billingexpr.ExprHashString(expression),
@@ -1728,6 +1737,7 @@ func TestSettle_TokenRecalcFallsBackToCompletionTokens(t *testing.T) {
 			seedChannel(t, channelID)
 
 			task := makeTask(userID, channelID, preConsumed, tokenID, BillingSourceWallet, 0)
+			require.NoError(t, model.DB.Create(task).Error)
 			settled := settleTaskBillingOnComplete(
 				context.Background(),
 				&mockAdaptor{},

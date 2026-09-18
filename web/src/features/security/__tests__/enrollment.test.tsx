@@ -17,14 +17,22 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { act, render, screen, waitFor, within } from '@testing-library/react'
+import {
+  act,
+  render as rtlRender,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { toast } from 'sonner'
+import type { ReactNode } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { OAUTH_POPUP_CALLBACK_MESSAGE } from '@/features/auth/constants'
 import type { UserProfile } from '@/features/profile/types'
 import { api } from '@/lib/api'
+import { statusQueryOptions } from '@/lib/status-query'
 
 import { AccountBindings } from '../components/account-bindings'
 import { PasskeyCard } from '../components/passkey-card'
@@ -74,6 +82,19 @@ afterEach(() => {
     Object.defineProperty(navigator, 'credentials', credentialsDescriptor)
   } else Reflect.deleteProperty(navigator, 'credentials')
 })
+
+function render(ui: ReactNode) {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
+  client.setQueryData(statusQueryOptions.queryKey, {
+    passkey_rp_ids: ['example.com'],
+    passkey_origins: '',
+  } as Record<string, unknown>)
+  return rtlRender(
+    <QueryClientProvider client={client}>{ui}</QueryClientProvider>
+  )
+}
 
 it.each(['2fa', 'passkey'] as const)(
   'blocks %s enrollment and explains missing Telegram configuration',

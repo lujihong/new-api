@@ -383,7 +383,8 @@ it.each(['default', 'unset'] as const)(
     await user.clear(price)
     await user.type(price, '0.25')
     const region = screen.getByRole('region', { name: 'Edit model pricing' })
-    const button = screen.getByRole('button', { name: 'Save model prices' })
+    const buttons = screen.getAllByRole('button', { name: 'Save model prices' })
+    const button = buttons[buttons.length - 1]
     expect(region).not.toContainElement(button)
     expect(button.parentElement?.parentElement).toHaveClass('shrink-0')
     await user.click(button)

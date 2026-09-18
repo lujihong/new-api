@@ -29,6 +29,13 @@ func ComputeTieredQuotaWithRequest(snap *BillingSnapshot, params TokenParams, re
 	if snap.TaskUsageBilling && UsesFixedPricingByHash(snap.ExprString, snap.ExprHash) {
 		return TieredResult{}, fmt.Errorf("fixed pricing is not supported for task usage expressions")
 	}
+	if snap.TaskUsageBilling && snap.TaskRequestParams != nil {
+		body, err := common.Marshal(snap.TaskRequestParams)
+		if err != nil {
+			return TieredResult{}, fmt.Errorf("invalid frozen task request parameters: %w", err)
+		}
+		request.Body = body
+	}
 	cost, trace, err := RunExprByHashWithRequest(snap.ExprString, snap.ExprHash, params, request)
 	if err != nil {
 		return TieredResult{}, err
