@@ -180,3 +180,23 @@ describe('audit log sidebar entry', () => {
     expect(titles).toContain('Audit Logs')
   })
 })
+
+describe('chat and playground entries removal', () => {
+  it('useSidebarData does not include chat group, playground, or chat presets', () => {
+    const { result } = renderHook(() => useSidebarData())
+    expect(result.current.navGroups.some((group) => group.id === 'chat')).toBe(false)
+    const allItems = result.current.navGroups.flatMap((group) => group.items)
+    expect(allItems.some((item) => 'url' in item && item.url === '/playground')).toBe(false)
+    expect(allItems.some((item) => 'type' in item && item.type === 'chat-presets')).toBe(false)
+  })
+
+  it('useSidebarConfig completely omits chat and playground for all roles and configurations', () => {
+    const { result } = sidebarFor({
+      chat: { enabled: true, playground: true, chat: true },
+    })
+    expect(result.current.some((group) => group.id === 'chat')).toBe(false)
+    const allItems = result.current.flatMap((group) => group.items)
+    expect(allItems.some((item) => 'url' in item && item.url === '/playground')).toBe(false)
+    expect(allItems.some((item) => 'type' in item && item.type === 'chat-presets')).toBe(false)
+  })
+})
