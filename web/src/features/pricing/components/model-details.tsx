@@ -1509,7 +1509,7 @@ export function ModelDetailsContent(props: ModelDetailsContentProps) {
   return (
     <div className='@container/details space-y-4'>
       <ModelHeader model={props.model} />
-      <ModelDiscountCaption model={props.model} />
+      <ModelDiscountCaption model={props.model} variant='details' />
 
       <Tabs defaultValue='overview' className='gap-4'>
         <TabsList className='bg-muted/60 grid w-full grid-cols-3 gap-1 rounded-lg p-1 group-data-horizontal/tabs:h-auto'>

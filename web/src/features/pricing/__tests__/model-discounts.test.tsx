@@ -22,8 +22,27 @@ describe('viewer model discounts', () => {
     expect(getModelGroupRatio(discounted, 'vip', { vip: 20 })).toBe(2 * factor)
     expect(formatGroupPrice(discounted, 'vip', 'input', 'M', false, 1, 1, { vip: 20 })).toBe(formatPrice({ ...model, group_ratio: { vip: 2 * factor } }, 'input', 'M'))
     if (factor === 0) expect(formatFixedPrice({ ...discounted, quota_type: 1, model_price: 5 }, 'vip', false, 1, 1, { vip: 20 })).toMatch(/0/)
-    render(<ModelDiscountCaption model={discounted} />)
-    expect(screen.getByText(/个人专属/)).toHaveTextContent(factor === 1 ? '原价' : `${factor * 10}折`)
+
+    // 卡片展示场景：无额外折扣 (factor === 1) 严禁在卡片外露多余提示；有折扣则展示醒目高光徽标
+    const { container: cardContainer } = render(<ModelDiscountCaption model={discounted} variant='card' />)
+    if (factor === 1) {
+      expect(cardContainer.firstChild).toBeNull()
+    } else {
+      expect(screen.getByText(/个人专属/)).toHaveTextContent(factor === 0 ? '免费' : `${factor * 10}折`)
+    }
+
+    // 详情展示场景：直观友好呈现，原价明确说明沿用组价，折扣明确说明扣费倍率
+    const { container: detailsContainer } = render(<ModelDiscountCaption model={discounted} variant='details' />)
+    if (factor === 1) {
+      expect(detailsContainer).toHaveTextContent(/当前模型执行账号分组标准组价，未设置额外单模型折扣/)
+    } else {
+      expect(detailsContainer).toHaveTextContent(/已享个人专属/)
+      expect(detailsContainer).toHaveTextContent(factor === 0 ? '免费' : `${factor * 10}折`)
+    }
+
+    // 显式全价纯文本模式
+    render(<ModelDiscountCaption model={discounted} variant='caption' showFullPrice />)
+    expect(screen.getAllByText(/个人专属/).length).toBeGreaterThan(0)
   })
 
   it('uses personalized group multipliers for models enabled for all groups', () => {

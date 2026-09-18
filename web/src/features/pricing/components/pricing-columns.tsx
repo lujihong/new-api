@@ -92,7 +92,7 @@ export function usePricingColumns(
       cell: ({ row }) => (
         <div className='space-y-1'>
           <ModelPriceCell model={row.original} options={options} />
-          <ModelDiscountCaption model={row.original} />
+          <ModelDiscountCaption model={row.original} variant='table' />
         </div>
       ),
       size: 180,
