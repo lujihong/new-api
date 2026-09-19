@@ -33,6 +33,8 @@ type AICCConfig struct {
 	AccessKeySecret string
 	Endpoint        string
 	PoolID          string
+	ChannelID       int
+	ChannelName     string
 }
 
 type AICCH5SessionResponse struct {
@@ -49,7 +51,16 @@ func validateAICCResourceID(value string) (string, error) {
 	return value, nil
 }
 
-func GetAICCConfig() AICCConfig {
+func GetAICCConfig(channelID ...int) AICCConfig {
+	cID := 0
+	if len(channelID) > 0 {
+		cID = channelID[0]
+	}
+	cfg, _ := GetAICCConfigForChannel(cID)
+	return cfg
+}
+
+func GetAICCConfigForChannel(channelID int) (AICCConfig, error) {
 	ak := strings.TrimSpace(os.Getenv("AICC_ACCESS_KEY_ID"))
 	sk := strings.TrimSpace(os.Getenv("AICC_ACCESS_KEY_SECRET"))
 	endpoint := strings.TrimSpace(os.Getenv("AICC_ENDPOINT"))
@@ -57,24 +68,42 @@ func GetAICCConfig() AICCConfig {
 		endpoint = DefaultAICCEndpoint
 	}
 
-	if ak == "" || sk == "" {
-		// 从启用的渠道中读取配置
-		var channel model.Channel
-		err := model.DB.Where("status = 1 AND (name LIKE '%移动%' OR name LIKE '%AICC%' OR other_info LIKE '%access_key_id%')").
-			Order("priority DESC, id DESC").
-			First(&channel).Error
-		if err == nil && channel.OtherInfo != "" {
-			if v := gjson.Get(channel.OtherInfo, "access_key_id").String(); v != "" {
-				ak = v
+	if model.DB != nil {
+		var ch model.Channel
+		var err error
+		if channelID > 0 {
+			err = model.DB.Where("id = ? AND status = 1", channelID).First(&ch).Error
+		} else {
+			err = model.DB.Where("status = 1 AND (type = 54 OR other_info LIKE '%access_key_id%' OR name LIKE '%移动%' OR name LIKE '%AICC%')").
+				Order("priority DESC, id ASC").
+				First(&ch).Error
+		}
+		if err == nil && ch.OtherInfo != "" {
+			cAK := gjson.Get(ch.OtherInfo, "access_key_id").String()
+			cSK := gjson.Get(ch.OtherInfo, "access_key_secret").String()
+			cEP := gjson.Get(ch.OtherInfo, "endpoint").String()
+			cPool := gjson.Get(ch.OtherInfo, "pool_id").String()
+			if cEP == "" {
+				cEP = endpoint
 			}
-			if v := gjson.Get(channel.OtherInfo, "access_key_secret").String(); v != "" {
-				sk = v
+			if cPool == "" {
+				cPool = DefaultAICCPoolID
+			}
+			if cAK != "" && cSK != "" {
+				return AICCConfig{
+					AccessKeyID:     cAK,
+					AccessKeySecret: cSK,
+					Endpoint:        cEP,
+					PoolID:          cPool,
+					ChannelID:       int(ch.Id),
+					ChannelName:     ch.Name,
+				}, nil
 			}
 		}
 	}
 
 	if ak == "" || sk == "" {
-		return AICCConfig{AccessKeyID: ak, AccessKeySecret: sk, Endpoint: endpoint, PoolID: DefaultAICCPoolID}
+		return AICCConfig{AccessKeyID: ak, AccessKeySecret: sk, Endpoint: endpoint, PoolID: DefaultAICCPoolID}, errors.New("移动云 AICC 账号未配置")
 	}
 
 	return AICCConfig{
@@ -82,7 +111,47 @@ func GetAICCConfig() AICCConfig {
 		AccessKeySecret: sk,
 		Endpoint:        endpoint,
 		PoolID:          DefaultAICCPoolID,
+	}, nil
+}
+
+// ListAvailableAICCChannels 列出系统当前所有已启用并支持 AICC 资产的移动云专线渠道
+func ListAvailableAICCChannels() ([]map[string]any, error) {
+	if model.DB == nil {
+		return []map[string]any{}, nil
 	}
+	var channels []model.Channel
+	err := model.DB.Where("status = 1 AND (type = 54 OR other_info LIKE '%access_key_id%' OR name LIKE '%移动%')").
+		Order("priority DESC, id ASC").
+		Find(&channels).Error
+	if err != nil {
+		return nil, err
+	}
+	result := make([]map[string]any, 0, len(channels))
+		for _, ch := range channels {
+			region := "官方移动专线"
+			base := ""
+			if ch.BaseURL != nil {
+				base = *ch.BaseURL
+			}
+			if strings.Contains(ch.Name, "呼和浩特") || strings.Contains(base, "huhehaote") {
+				region = "呼和浩特节点"
+			} else if strings.Contains(ch.Name, "内蒙") {
+				region = "内蒙节点"
+			} else if strings.Contains(ch.Name, "北京") {
+				region = "北京节点"
+			}
+		var modelsList []string
+		if strings.TrimSpace(ch.Models) != "" {
+			modelsList = strings.Split(ch.Models, ",")
+		}
+		result = append(result, map[string]any{
+			"id":     ch.Id,
+			"name":   ch.Name,
+			"region": region,
+			"models": modelsList,
+		})
+	}
+	return result, nil
 }
 
 // ValidateAICCVideoChannel prevents account-scoped assets from falling back to an unrelated provider.
@@ -95,26 +164,34 @@ func ValidateAICCVideoAssetChannel(channelID int, assetID string) error {
 	if channelID <= 0 || model.DB == nil {
 		return errors.New("AICC asset channel is unavailable")
 	}
-	cfg := GetAICCConfig()
-	if cfg.AccessKeyID == "" || cfg.AccessKeySecret == "" {
-		return errors.New("AICC account is unconfigured")
-	}
 	ch, err := model.GetChannelById(channelID, true)
 	if err != nil || ch == nil || ch.Status != common.ChannelStatusEnabled {
 		return errors.New("AICC asset channel is unavailable")
 	}
+
 	ak := gjson.Get(ch.OtherInfo, "access_key_id").String()
 	sk := gjson.Get(ch.OtherInfo, "access_key_secret").String()
 
 	if strings.TrimSpace(assetID) != "" {
 		assetChannelID, err := model.GetAICCAssetChannelID(assetID)
 		if err == nil && assetChannelID > 0 && assetChannelID != channelID {
-			return fmt.Errorf("人物素材所属移动云渠道(ID: %d)与当前视频任务渠道(ID: %d)不匹配，移动云真人肖像不支持跨渠道使用", assetChannelID, channelID)
+			return fmt.Errorf("真人素材所属移动云渠道(ID: %d)与当前视频任务派发渠道(ID: %d)不匹配，移动云真人肖像为强租户绑定资产，无法跨渠道跨账号使用，请选用该素材对应的视频渠道", assetChannelID, channelID)
+		}
+		if err == nil && assetChannelID == 0 {
+			defaultCfg := GetAICCConfig()
+			if defaultCfg.AccessKeyID != "" && (ak != defaultCfg.AccessKeyID || sk != defaultCfg.AccessKeySecret) {
+				return errors.New("人物素材仅可使用其所属移动云账号渠道，请选择移动云渠道后重试")
+			}
 		}
 	}
 
-	if ak != cfg.AccessKeyID || sk != cfg.AccessKeySecret {
-		return errors.New("人物素材仅可使用其所属移动云账号渠道，请选择移动云渠道后重试")
+	targetCfg, err := GetAICCConfigForChannel(channelID)
+	if err != nil || targetCfg.AccessKeyID == "" || targetCfg.AccessKeySecret == "" {
+		return errors.New("该视频渠道未配置有效的移动云 AICC 密钥凭据，请选择已配置的移动云专线渠道")
+	}
+
+	if ak != targetCfg.AccessKeyID || sk != targetCfg.AccessKeySecret {
+		return errors.New("人物素材仅可使用其所属移动云账号渠道，请选择对应移动云渠道后重试")
 	}
 	return nil
 }
@@ -162,8 +239,18 @@ func SignAICCRequest(method, servletPath string, queryParams map[string]string, 
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-func doAICCRequest(ctx context.Context, method, path string, body any) ([]byte, error) {
-	cfg := GetAICCConfig()
+func aiccChannelIDFromSlice(channelID []int) int {
+	if len(channelID) > 0 {
+		return channelID[0]
+	}
+	return 0
+}
+
+func doAICCRequest(ctx context.Context, channelID int, method, path string, body any) ([]byte, error) {
+	cfg, err := GetAICCConfigForChannel(channelID)
+	if err != nil {
+		return nil, err
+	}
 	if cfg.AccessKeyID == "" || cfg.AccessKeySecret == "" {
 		return nil, errors.New("AICC AccessKey ID or SecretKey is unconfigured")
 	}
@@ -242,9 +329,10 @@ func doAICCRequest(ctx context.Context, method, path string, body any) ([]byte, 
 }
 
 // CreateAICCH5Session 创建真人实名认证会话，返回 H5 认证链接和 bytedToken
-func CreateAICCH5Session(ctx context.Context) (*AICCH5SessionResponse, error) {
+func CreateAICCH5Session(ctx context.Context, channelID ...int) (*AICCH5SessionResponse, error) {
+	cID := aiccChannelIDFromSlice(channelID)
 	path := "/api/openapi-maas/exp/aicc/v2/real-person-auth/sessions"
-	respBytes, err := doAICCRequest(ctx, http.MethodPost, path, map[string]any{})
+	respBytes, err := doAICCRequest(ctx, cID, http.MethodPost, path, map[string]any{})
 	if err != nil {
 		return nil, err
 	}
@@ -262,9 +350,10 @@ func CreateAICCH5Session(ctx context.Context) (*AICCH5SessionResponse, error) {
 }
 
 // QueryAICCGroupByBytedToken 通过 bytedToken 查询真人认证状态及素材组信息
-func QueryAICCGroupByBytedToken(ctx context.Context, bytedToken string) (map[string]any, error) {
+func QueryAICCGroupByBytedToken(ctx context.Context, bytedToken string, channelID ...int) (map[string]any, error) {
+	cID := aiccChannelIDFromSlice(channelID)
 	path := "/api/openapi-maas/exp/aicc/v2/real-person-auth/asset-group/by-byted-token"
-	respBytes, err := doAICCRequest(ctx, http.MethodPost, path, map[string]any{
+	respBytes, err := doAICCRequest(ctx, cID, http.MethodPost, path, map[string]any{
 		"bytedToken": strings.TrimSpace(bytedToken),
 	})
 	if err != nil {
@@ -279,14 +368,15 @@ func QueryAICCGroupByBytedToken(ctx context.Context, bytedToken string) (map[str
 }
 
 // GetAICCAsset 查询单个素材详情（包含 12 小时有效的临时 assetUrl 用于预览）
-func GetAICCAsset(ctx context.Context, assetId string) (map[string]any, error) {
+func GetAICCAsset(ctx context.Context, assetId string, channelID ...int) (map[string]any, error) {
+	cID := aiccChannelIDFromSlice(channelID)
 	var err error
 	assetId, err = validateAICCResourceID(assetId)
 	if err != nil {
 		return nil, err
 	}
 	path := fmt.Sprintf("/api/openapi-maas/exp/aicc/v2/asset/%s", assetId)
-	respBytes, err := doAICCRequest(ctx, http.MethodGet, path, nil)
+	respBytes, err := doAICCRequest(ctx, cID, http.MethodGet, path, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -298,7 +388,8 @@ func GetAICCAsset(ctx context.Context, assetId string) (map[string]any, error) {
 }
 
 // UpdateAICCAsset 更新可用素材的名称；nil 表示保留原值。
-func UpdateAICCAsset(ctx context.Context, assetID string, assetName *string) (map[string]any, error) {
+func UpdateAICCAsset(ctx context.Context, assetID string, assetName *string, channelID ...int) (map[string]any, error) {
+	cID := aiccChannelIDFromSlice(channelID)
 	assetID = strings.TrimSpace(assetID)
 	if assetID == "" || strings.ContainsAny(assetID, "/?#") {
 		return nil, errors.New("invalid assetId")
@@ -307,7 +398,7 @@ func UpdateAICCAsset(ctx context.Context, assetID string, assetName *string) (ma
 	if assetName != nil {
 		payload["assetName"] = *assetName
 	}
-	resp, err := doAICCRequest(ctx, http.MethodPut, "/api/openapi-maas/exp/aicc/v2/asset/"+assetID, payload)
+	resp, err := doAICCRequest(ctx, cID, http.MethodPut, "/api/openapi-maas/exp/aicc/v2/asset/"+assetID, payload)
 	if err != nil {
 		return nil, err
 	}
@@ -319,14 +410,15 @@ func UpdateAICCAsset(ctx context.Context, assetID string, assetName *string) (ma
 }
 
 // DeleteAICCAsset 删除素材
-func DeleteAICCAsset(ctx context.Context, assetId string) (map[string]any, error) {
+func DeleteAICCAsset(ctx context.Context, assetId string, channelID ...int) (map[string]any, error) {
+	cID := aiccChannelIDFromSlice(channelID)
 	var err error
 	assetId, err = validateAICCResourceID(assetId)
 	if err != nil {
 		return nil, err
 	}
 	path := fmt.Sprintf("/api/openapi-maas/exp/aicc/v2/asset/%s", assetId)
-	respBytes, err := doAICCRequest(ctx, http.MethodDelete, path, nil)
+	respBytes, err := doAICCRequest(ctx, cID, http.MethodDelete, path, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -338,14 +430,15 @@ func DeleteAICCAsset(ctx context.Context, assetId string) (map[string]any, error
 }
 
 // GetAICCAssetGroup 查询单个素材组详情
-func GetAICCAssetGroup(ctx context.Context, groupId string) (map[string]any, error) {
+func GetAICCAssetGroup(ctx context.Context, groupId string, channelID ...int) (map[string]any, error) {
+	cID := aiccChannelIDFromSlice(channelID)
 	var err error
 	groupId, err = validateAICCResourceID(groupId)
 	if err != nil {
 		return nil, err
 	}
 	path := fmt.Sprintf("/api/openapi-maas/exp/aicc/v2/asset-group/%s", groupId)
-	respBytes, err := doAICCRequest(ctx, http.MethodGet, path, nil)
+	respBytes, err := doAICCRequest(ctx, cID, http.MethodGet, path, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -357,11 +450,12 @@ func GetAICCAssetGroup(ctx context.Context, groupId string) (map[string]any, err
 }
 
 // UpdateAICCAssetGroup 更新素材组名称和描述
-func UpdateAICCAssetGroup(ctx context.Context, groupId, groupName, description string) (map[string]any, error) {
-	return UpdateAICCAssetGroupFields(ctx, groupId, &groupName, &description)
+func UpdateAICCAssetGroup(ctx context.Context, groupId, groupName, description string, channelID ...int) (map[string]any, error) {
+	return UpdateAICCAssetGroupFields(ctx, groupId, &groupName, &description, channelID...)
 }
 
-func UpdateAICCAssetGroupFields(ctx context.Context, groupId string, groupName, description *string) (map[string]any, error) {
+func UpdateAICCAssetGroupFields(ctx context.Context, groupId string, groupName, description *string, channelID ...int) (map[string]any, error) {
+	cID := aiccChannelIDFromSlice(channelID)
 	var err error
 	groupId, err = validateAICCResourceID(groupId)
 	if err != nil {
@@ -375,7 +469,7 @@ func UpdateAICCAssetGroupFields(ctx context.Context, groupId string, groupName, 
 	if description != nil {
 		payload["description"] = strings.TrimSpace(*description)
 	}
-	respBytes, err := doAICCRequest(ctx, http.MethodPut, path, payload)
+	respBytes, err := doAICCRequest(ctx, cID, http.MethodPut, path, payload)
 	if err != nil {
 		return nil, err
 	}
@@ -387,14 +481,15 @@ func UpdateAICCAssetGroupFields(ctx context.Context, groupId string, groupName, 
 }
 
 // DeleteAICCAssetGroup 删除素材组
-func DeleteAICCAssetGroup(ctx context.Context, groupId string) (map[string]any, error) {
+func DeleteAICCAssetGroup(ctx context.Context, groupId string, channelID ...int) (map[string]any, error) {
+	cID := aiccChannelIDFromSlice(channelID)
 	var err error
 	groupId, err = validateAICCResourceID(groupId)
 	if err != nil {
 		return nil, err
 	}
 	path := fmt.Sprintf("/api/openapi-maas/exp/aicc/v2/asset-group/%s", groupId)
-	respBytes, err := doAICCRequest(ctx, http.MethodDelete, path, nil)
+	respBytes, err := doAICCRequest(ctx, cID, http.MethodDelete, path, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -409,6 +504,7 @@ func DeleteAICCAssetGroup(ctx context.Context, groupId string) (map[string]any, 
 type AICCGroupFilters struct {
 	GroupName string
 	GroupIDs  []string
+	ChannelID int
 }
 
 func ListAICCAssetGroups(ctx context.Context, pageNo, pageSize int, groupType string, filters ...AICCGroupFilters) (map[string]any, error) {
@@ -426,6 +522,7 @@ func ListAICCAssetGroups(ctx context.Context, pageNo, pageSize int, groupType st
 	if groupType != "" {
 		payload["groupType"] = groupType
 	}
+	cID := 0
 	if len(filters) > 0 {
 		if filters[0].GroupName != "" {
 			payload["groupName"] = filters[0].GroupName
@@ -433,9 +530,10 @@ func ListAICCAssetGroups(ctx context.Context, pageNo, pageSize int, groupType st
 		if len(filters[0].GroupIDs) > 0 {
 			payload["groupIds"] = filters[0].GroupIDs
 		}
+		cID = filters[0].ChannelID
 	}
 
-	respBytes, err := doAICCRequest(ctx, http.MethodPost, path, payload)
+	respBytes, err := doAICCRequest(ctx, cID, http.MethodPost, path, payload)
 	if err != nil {
 		return nil, err
 	}
@@ -448,14 +546,15 @@ func ListAICCAssetGroups(ctx context.Context, pageNo, pageSize int, groupType st
 }
 
 // CreateAICCAssetGroup 创建 AIGC（虚拟人像）素材组
-func CreateAICCAssetGroup(ctx context.Context, groupName, description string) (map[string]any, error) {
+func CreateAICCAssetGroup(ctx context.Context, groupName, description string, channelID ...int) (map[string]any, error) {
+	cID := aiccChannelIDFromSlice(channelID)
 	path := "/api/openapi-maas/exp/aicc/v2/asset-group"
 	payload := map[string]any{
 		"groupType":   "AIGC",
 		"groupName":   groupName,
 		"description": description,
 	}
-	respBytes, err := doAICCRequest(ctx, http.MethodPost, path, payload)
+	respBytes, err := doAICCRequest(ctx, cID, http.MethodPost, path, payload)
 	if err != nil {
 		return nil, err
 	}
@@ -468,7 +567,8 @@ func CreateAICCAssetGroup(ctx context.Context, groupName, description string) (m
 }
 
 // CreateAICCAsset 向素材组添加素材（图片/视频 URL）
-func CreateAICCAsset(ctx context.Context, groupId, assetName, assetUrl, assetType string) (map[string]any, error) {
+func CreateAICCAsset(ctx context.Context, groupId, assetName, assetUrl, assetType string, channelID ...int) (map[string]any, error) {
+	cID := aiccChannelIDFromSlice(channelID)
 	var err error
 	groupId, err = validateAICCResourceID(groupId)
 	if err != nil {
@@ -481,7 +581,7 @@ func CreateAICCAsset(ctx context.Context, groupId, assetName, assetUrl, assetTyp
 		"assetUrl":  assetUrl,
 		"assetType": assetType,
 	}
-	respBytes, err := doAICCRequest(ctx, http.MethodPost, path, payload)
+	respBytes, err := doAICCRequest(ctx, cID, http.MethodPost, path, payload)
 	if err != nil {
 		return nil, err
 	}
@@ -495,6 +595,10 @@ func CreateAICCAsset(ctx context.Context, groupId, assetName, assetUrl, assetTyp
 
 // QueryAICCAssets 查询素材列表（支持 AIGC / LivenessFace）
 func QueryAICCAssets(ctx context.Context, pageNo, pageSize int, groupType string, groupIds []string, assetName string, statuses ...string) (map[string]any, error) {
+	return QueryAICCAssetsWithChannel(ctx, pageNo, pageSize, groupType, groupIds, assetName, 0, statuses...)
+}
+
+func QueryAICCAssetsWithChannel(ctx context.Context, pageNo, pageSize int, groupType string, groupIds []string, assetName string, channelID int, statuses ...string) (map[string]any, error) {
 	if pageNo <= 0 {
 		pageNo = 1
 	}
@@ -520,7 +624,7 @@ func QueryAICCAssets(ctx context.Context, pageNo, pageSize int, groupType string
 		payload["statuses"] = statuses
 	}
 
-	respBytes, err := doAICCRequest(ctx, http.MethodPost, path, payload)
+	respBytes, err := doAICCRequest(ctx, channelID, http.MethodPost, path, payload)
 	if err != nil {
 		return nil, err
 	}

@@ -393,10 +393,11 @@ func SetApiRouter(router *gin.Engine) {
 			aiccManagement.PUT("/assets/:id", controller.UpdateAICCAsset)
 			aiccManagement.DELETE("/assets/:id", controller.DeleteAICCAsset)
 		}
-		aiccRoute := apiRouter.Group("/aicc")
-		aiccRoute.Use(middleware.TokenOrUserAuth())
-		{
-			aiccRoute.POST("/uploads", middleware.CriticalRateLimit(), controller.CreateAICCUpload)
+			aiccRoute := apiRouter.Group("/aicc")
+			aiccRoute.Use(middleware.TokenOrUserAuth())
+			{
+				aiccRoute.GET("/channels", controller.ListAICCChannels)
+				aiccRoute.POST("/uploads", middleware.CriticalRateLimit(), controller.CreateAICCUpload)
 			aiccRoute.POST("/auth/session", controller.CreateAICCH5Session)
 			aiccRoute.GET("/auth/session/:token", controller.QueryAICCGroupByBytedToken)
 			aiccRoute.GET("/auth/group", controller.QueryAICCGroupByBytedToken)

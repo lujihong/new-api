@@ -116,6 +116,18 @@ func GetAICCAssetChannelID(assetID string) (int, error) {
 	return row.ChannelID, nil
 }
 
+func GetAICCGroupChannelID(groupID string) (int, error) {
+	groupID, err := validateAICCResourceID(groupID)
+	if err != nil {
+		return 0, err
+	}
+	var row AICCAssetGroupOwnership
+	if err := DB.Select("channel_id").Where("group_id = ?", groupID).First(&row).Error; err != nil {
+		return 0, err
+	}
+	return row.ChannelID, nil
+}
+
 func UserOwnsAICCAssetGroup(userID int, groupID string) (bool, error) {
 	groupID, err := validateAICCResourceID(groupID)
 	if err != nil {

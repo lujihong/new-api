@@ -228,6 +228,36 @@ func aiccFilterPage(data map[string]any, allowed map[string]struct{}, key string
 	return result
 }
 
+func aiccChannelIDFromRequest(c *gin.Context) int {
+	if chStr := c.Query("channel_id"); chStr != "" {
+		if id, err := strconv.Atoi(chStr); err == nil && id > 0 {
+			return id
+		}
+	}
+	if chStr := c.GetHeader("X-AICC-Channel-ID"); chStr != "" {
+		if id, err := strconv.Atoi(chStr); err == nil && id > 0 {
+			return id
+		}
+	}
+	return 0
+}
+
+// ListAICCChannels 获取当前系统所有可用的移动云专线渠道列表
+func ListAICCChannels(c *gin.Context) {
+	if !checkAICCAuth(c) {
+		return
+	}
+	channels, err := service.ListAvailableAICCChannels()
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": err.Error(),
+		})
+		return
+	}
+	common.ApiSuccess(c, channels)
+}
+
 func checkAICCAuth(c *gin.Context) bool {
 	if aiccUserID(c) <= 0 {
 		c.JSON(http.StatusUnauthorized, gin.H{
@@ -244,7 +274,8 @@ func CreateAICCH5Session(c *gin.Context) {
 	if !checkAICCAuth(c) {
 		return
 	}
-	session, err := service.CreateAICCH5Session(c.Request.Context())
+	channelID := aiccChannelIDFromRequest(c)
+	session, err := service.CreateAICCH5Session(c.Request.Context(), channelID)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -253,7 +284,7 @@ func CreateAICCH5Session(c *gin.Context) {
 		return
 	}
 
-	if err := model.RecordAICCAuthSession(aiccUserID(c), session.BytedToken, session.ExpiresIn); err != nil {
+	if err := model.RecordAICCAuthSession(aiccUserID(c), session.BytedToken, session.ExpiresIn, channelID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "认证会话保存失败，请重新发起认证"})
 		return
 	}
@@ -336,20 +367,21 @@ func QueryAICCGroupByBytedToken(c *gin.Context) {
 	if hasStatus {
 		authenticated = authenticated && terminalSuccess && !terminalFailure
 	}
-	if authenticated && !isAICCAdmin(c) {
-		for groupID := range refs.GroupIDs {
-			if err := model.RecordAICCAssetGroupOwnership(aiccUserID(c), groupID, "LivenessFace"); err != nil {
-				common.ApiError(c, err)
-				return
+		if authenticated && !isAICCAdmin(c) {
+			sessionChannelID, _ := model.GetAICCAuthSessionChannelID(aiccUserID(c), token)
+			for groupID := range refs.GroupIDs {
+				if err := model.RecordAICCAssetGroupOwnership(aiccUserID(c), groupID, "LivenessFace", sessionChannelID); err != nil {
+					common.ApiError(c, err)
+					return
+				}
+			}
+			for assetID, groupID := range refs.Assets {
+				if err := model.RecordAICCAssetOwnership(aiccUserID(c), assetID, groupID, sessionChannelID); err != nil {
+					common.ApiError(c, err)
+					return
+				}
 			}
 		}
-		for assetID, groupID := range refs.Assets {
-			if err := model.RecordAICCAssetOwnership(aiccUserID(c), assetID, groupID); err != nil {
-				common.ApiError(c, err)
-				return
-			}
-		}
-	}
 	data["authenticated"] = authenticated
 
 	common.ApiSuccess(c, data)
@@ -375,176 +407,186 @@ func ListAICCAssetGroups(c *gin.Context) {
 	pageNo, _ := strconv.Atoi(c.DefaultQuery("pageNo", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("pageSize", "20"))
 	groupType := c.DefaultQuery("groupType", "")
-	requestedGroupIDs := aiccQueryValues(c, "groupIds")
-	var ownedGroupIDs map[string]struct{}
-	if !isAICCAdmin(c) {
-		var ownershipErr error
-		ownedGroupIDs, ownershipErr = aiccOwnedGroupIDs(aiccUserID(c))
-		if ownershipErr != nil {
-			common.ApiError(c, ownershipErr)
-			return
-		}
-		requestedGroupIDs = aiccRestrictIDs(requestedGroupIDs, ownedGroupIDs)
-		if len(requestedGroupIDs) == 0 {
-			common.ApiSuccess(c, aiccEmptyPage(pageNo, pageSize))
-			return
-		}
-	}
-
-	data, err := service.ListAICCAssetGroups(c.Request.Context(), pageNo, pageSize, groupType, service.AICCGroupFilters{GroupName: c.Query("groupName"), GroupIDs: requestedGroupIDs})
-	if err == nil && !isAICCAdmin(c) {
-		data = aiccFilterPage(data, ownedGroupIDs, "groupId")
-		if data["state"] != "OK" {
-			err = fmt.Errorf("移动云素材列表响应格式异常，请稍后重试")
-		}
-	}
-	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
-		return
-	}
-
-	common.ApiSuccess(c, data)
-}
-
-// CreateAICCAssetGroup 创建 AIGC 素材组
-func CreateAICCAssetGroup(c *gin.Context) {
-	if !checkAICCAuth(c) {
-		return
-	}
-	var req struct {
-		GroupName   string `json:"groupName" binding:"required"`
-		Description string `json:"description"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "参数错误: " + err.Error(),
-		})
-		return
-	}
-
-	data, err := service.CreateAICCAssetGroup(c.Request.Context(), req.GroupName, req.Description)
-	if err == nil && !isAICCAdmin(c) {
-		if groupID := aiccGroupID(data); groupID != "" {
-			err = model.RecordAICCAssetGroupOwnership(aiccUserID(c), groupID, "AIGC")
-			if err != nil {
-				// A duplicate upstream ID may already belong to another tenant; never delete it on a local write failure.
-				common.SysError(fmt.Sprintf("AICC ownership reconciliation required: user=%d group=%s", aiccUserID(c), groupID))
+		requestedGroupIDs := aiccQueryValues(c, "groupIds")
+		channelID := aiccChannelIDFromRequest(c)
+		var ownedGroupIDs map[string]struct{}
+		if !isAICCAdmin(c) {
+			var ownershipErr error
+			ownedGroupIDs, ownershipErr = aiccOwnedGroupIDs(aiccUserID(c))
+			if ownershipErr != nil {
+				common.ApiError(c, ownershipErr)
+				return
 			}
-		} else {
-			err = fmt.Errorf("AICC API response missing groupId")
-		}
-	}
-	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
-		return
-	}
-
-	common.ApiSuccess(c, data)
-}
-
-// CreateAICCAsset 创建/上传素材
-func CreateAICCAsset(c *gin.Context) {
-	if !checkAICCAuth(c) {
-		return
-	}
-	var req struct {
-		GroupId   string `json:"groupId" binding:"required"`
-		AssetName string `json:"assetName" binding:"required"`
-		AssetUrl  string `json:"assetUrl" binding:"required"`
-		AssetType string `json:"assetType" binding:"required"` // Image / Video / Audio
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "参数错误: " + err.Error(),
-		})
-		return
-	}
-
-	if !requireAICCGroupOwner(c, req.GroupId) {
-		return
-	}
-	if err := service.ValidateAICCUploadURL(req.AssetUrl, aiccUserID(c), req.GroupId, req.AssetType); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "上传文件已失效或与当前账号、素材组、类型不匹配，请重新上传"})
-		return
-	}
-	data, err := service.CreateAICCAsset(c.Request.Context(), req.GroupId, req.AssetName, req.AssetUrl, req.AssetType)
-	if err == nil {
-		assetID := aiccAssetID(data)
-		if assetID == "" {
-			err = fmt.Errorf("AICC API response missing assetId")
-		} else if !isAICCAdmin(c) {
-			err = model.RecordAICCAssetOwnership(aiccUserID(c), assetID, req.GroupId)
-			if err != nil {
-				common.SysError(fmt.Sprintf("AICC ownership reconciliation required: user=%d asset=%s group=%s", aiccUserID(c), assetID, req.GroupId))
+			requestedGroupIDs = aiccRestrictIDs(requestedGroupIDs, ownedGroupIDs)
+			if len(requestedGroupIDs) == 0 {
+				common.ApiSuccess(c, aiccEmptyPage(pageNo, pageSize))
+				return
 			}
 		}
-	}
-	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
-		return
-	}
 
-	common.ApiSuccess(c, data)
-}
-
-// QueryAICCAssets 查询素材列表
-func QueryAICCAssets(c *gin.Context) {
-	if !checkAICCAuth(c) {
-		return
-	}
-	pageNo, _ := strconv.Atoi(c.DefaultQuery("pageNo", "1"))
-	pageSize, _ := strconv.Atoi(c.DefaultQuery("pageSize", "20"))
-	groupType := c.DefaultQuery("groupType", "AIGC")
-	assetName := c.DefaultQuery("assetName", "")
-	groupIds := aiccQueryValues(c, "groupIds")
-	var ownedGroupIDs map[string]struct{}
-	if !isAICCAdmin(c) {
-		var ownershipErr error
-		ownedGroupIDs, ownershipErr = aiccOwnedGroupIDs(aiccUserID(c))
-		if ownershipErr != nil {
-			common.ApiError(c, ownershipErr)
+		data, err := service.ListAICCAssetGroups(c.Request.Context(), pageNo, pageSize, groupType, service.AICCGroupFilters{GroupName: c.Query("groupName"), GroupIDs: requestedGroupIDs, ChannelID: channelID})
+		if err == nil && !isAICCAdmin(c) {
+			data = aiccFilterPage(data, ownedGroupIDs, "groupId")
+			if data["state"] != "OK" {
+				err = fmt.Errorf("移动云素材列表响应格式异常，请稍后重试")
+			}
+		}
+		if err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
 			return
 		}
-		groupIds = aiccRestrictIDs(groupIds, ownedGroupIDs)
-		if len(groupIds) == 0 {
-			common.ApiSuccess(c, aiccEmptyPage(pageNo, pageSize))
-			return
-		}
+
+		common.ApiSuccess(c, data)
 	}
 
-	data, err := service.QueryAICCAssets(c.Request.Context(), pageNo, pageSize, groupType, groupIds, assetName, aiccQueryValues(c, "statuses")...)
-	if err == nil && !isAICCAdmin(c) {
-		// groupIds 是租户边界；资产 ID 归属表仍用于详情、更新和删除鉴权。
-		// 列表不能再按 asset ownership 二次收窄，否则远端组内的历史资产会被错误隐藏。
-		data = aiccFilterPage(data, ownedGroupIDs, "groupId")
-		if data["state"] != "OK" {
-			err = fmt.Errorf("移动云素材列表响应格式异常，请稍后重试")
+	// CreateAICCAssetGroup 创建 AIGC 素材组
+	func CreateAICCAssetGroup(c *gin.Context) {
+		if !checkAICCAuth(c) {
+			return
 		}
-		body := data["body"].(map[string]any)
-		for _, item := range body["data"].([]any) {
-			asset := item.(map[string]any)
-			assetID := aiccStringField(asset, "assetId")
-			groupID := aiccStringField(asset, "groupId")
+		var req struct {
+			GroupName   string `json:"groupName" binding:"required"`
+			Description string `json:"description"`
+			ChannelId   int    `json:"channelId"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "参数错误: " + err.Error(),
+			})
+			return
+		}
+
+		channelID := req.ChannelId
+		if channelID <= 0 {
+			channelID = aiccChannelIDFromRequest(c)
+		}
+
+		data, err := service.CreateAICCAssetGroup(c.Request.Context(), req.GroupName, req.Description, channelID)
+		if err == nil && !isAICCAdmin(c) {
+			if groupID := aiccGroupID(data); groupID != "" {
+				err = model.RecordAICCAssetGroupOwnership(aiccUserID(c), groupID, "AIGC", channelID)
+				if err != nil {
+					// A duplicate upstream ID may already belong to another tenant; never delete it on a local write failure.
+					common.SysError(fmt.Sprintf("AICC ownership reconciliation required: user=%d group=%s", aiccUserID(c), groupID))
+				}
+			} else {
+				err = fmt.Errorf("AICC API response missing groupId")
+			}
+		}
+		if err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
+
+		common.ApiSuccess(c, data)
+	}
+
+	// CreateAICCAsset 创建/上传素材
+	func CreateAICCAsset(c *gin.Context) {
+		if !checkAICCAuth(c) {
+			return
+		}
+		var req struct {
+			GroupId   string `json:"groupId" binding:"required"`
+			AssetName string `json:"assetName" binding:"required"`
+			AssetUrl  string `json:"assetUrl" binding:"required"`
+			AssetType string `json:"assetType" binding:"required"` // Image / Video / Audio
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "参数错误: " + err.Error(),
+			})
+			return
+		}
+
+		if !requireAICCGroupOwner(c, req.GroupId) {
+			return
+		}
+		if err := service.ValidateAICCUploadURL(req.AssetUrl, aiccUserID(c), req.GroupId, req.AssetType); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "上传文件已失效或与当前账号、素材组、类型不匹配，请重新上传"})
+			return
+		}
+
+		groupChannelID, _ := model.GetAICCGroupChannelID(req.GroupId)
+		data, err := service.CreateAICCAsset(c.Request.Context(), req.GroupId, req.AssetName, req.AssetUrl, req.AssetType, groupChannelID)
+		if err == nil {
+			assetID := aiccAssetID(data)
 			if assetID == "" {
-				err = fmt.Errorf("invalid AICC asset list response")
-				break
-			}
-			if err = model.RecordAICCAssetOwnership(aiccUserID(c), assetID, groupID); err != nil {
-				break
+				err = fmt.Errorf("AICC API response missing assetId")
+			} else if !isAICCAdmin(c) {
+				err = model.RecordAICCAssetOwnership(aiccUserID(c), assetID, req.GroupId, groupChannelID)
+				if err != nil {
+					common.SysError(fmt.Sprintf("AICC ownership reconciliation required: user=%d asset=%s group=%s", aiccUserID(c), assetID, req.GroupId))
+				}
 			}
 		}
+		if err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
+
+		common.ApiSuccess(c, data)
 	}
+
+	// QueryAICCAssets 查询素材列表
+	func QueryAICCAssets(c *gin.Context) {
+		if !checkAICCAuth(c) {
+			return
+		}
+		pageNo, _ := strconv.Atoi(c.DefaultQuery("pageNo", "1"))
+		pageSize, _ := strconv.Atoi(c.DefaultQuery("pageSize", "20"))
+		groupType := c.DefaultQuery("groupType", "AIGC")
+		assetName := c.DefaultQuery("assetName", "")
+		groupIds := aiccQueryValues(c, "groupIds")
+		channelID := aiccChannelIDFromRequest(c)
+		var ownedGroupIDs map[string]struct{}
+		if !isAICCAdmin(c) {
+			var ownershipErr error
+			ownedGroupIDs, ownershipErr = aiccOwnedGroupIDs(aiccUserID(c))
+			if ownershipErr != nil {
+				common.ApiError(c, ownershipErr)
+				return
+			}
+			groupIds = aiccRestrictIDs(groupIds, ownedGroupIDs)
+			if len(groupIds) == 0 {
+				common.ApiSuccess(c, aiccEmptyPage(pageNo, pageSize))
+				return
+			}
+		}
+
+		data, err := service.QueryAICCAssetsWithChannel(c.Request.Context(), pageNo, pageSize, groupType, groupIds, assetName, channelID, aiccQueryValues(c, "statuses")...)
+		if err == nil && !isAICCAdmin(c) {
+			// groupIds 是租户边界；资产 ID 归属表仍用于详情、更新和删除鉴权。
+			// 列表不能再按 asset ownership 二次收窄，否则远端组内的历史资产会被错误隐藏。
+			data = aiccFilterPage(data, ownedGroupIDs, "groupId")
+			if data["state"] != "OK" {
+				err = fmt.Errorf("移动云素材列表响应格式异常，请稍后重试")
+			}
+			body := data["body"].(map[string]any)
+			for _, item := range body["data"].([]any) {
+				asset := item.(map[string]any)
+				assetID := aiccStringField(asset, "assetId")
+				groupID := aiccStringField(asset, "groupId")
+				if assetID == "" {
+					err = fmt.Errorf("invalid AICC asset list response")
+					break
+				}
+				if err = model.RecordAICCAssetOwnership(aiccUserID(c), assetID, groupID, channelID); err != nil {
+					break
+				}
+			}
+		}
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
