@@ -134,10 +134,18 @@ type TaskPrivateData struct {
 	PollFailures int `json:"poll_failures,omitempty"`
 }
 
+type AICCDispatchSnapshot struct {
+	ChannelID         int    `json:"channel_id"`
+	AccountID         string `json:"account_id"`
+	BaseURL           string `json:"base_url"`
+	ConfigFingerprint string `json:"config_fingerprint"`
+}
+
 type TaskExecutionSnapshot struct {
-	RequestID   string              `json:"request_id,omitempty"`
-	RequestPath string              `json:"request_path,omitempty"`
-	TaskPlugin  *TaskPluginSnapshot `json:"task_plugin,omitempty"`
+	AICC        *AICCDispatchSnapshot `json:"aicc,omitempty"`
+	RequestID   string                `json:"request_id,omitempty"`
+	RequestPath string                `json:"request_path,omitempty"`
+	TaskPlugin  *TaskPluginSnapshot   `json:"task_plugin,omitempty"`
 }
 
 // TaskPluginSnapshot contains credential-free identity only. Plugin source,

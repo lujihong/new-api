@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 )
@@ -28,6 +29,10 @@ func CreateAICCUpload(c *gin.Context) {
 	// Reject the explicit scope even if its role/token combination is malformed.
 	if c.GetBool("aicc_management_scope") || isAICCAdmin(c) {
 		c.JSON(http.StatusForbidden, gin.H{"success": false, "message": "请在本人素材组上传"})
+		return
+	}
+	if _, present, err := aiccChannelIDFromRequest(c); err != nil || !present {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "请明确指定有效的 channel_id"})
 		return
 	}
 	select {
@@ -82,9 +87,16 @@ func CreateAICCUpload(c *gin.Context) {
 		aiccUploadError(c, service.ErrAICCUploadInvalid)
 		return
 	}
-	if !requireAICCGroupOwner(c, group) {
+	binding, err := model.GetOwnedAICCGroupBinding(aiccUserID(c), group)
+	if err != nil {
+		c.JSON(http.StatusForbidden, gin.H{"success": false, "message": "无权上传至该素材组或素材组绑定无效"})
 		return
 	}
+	cfg, ok := aiccConfigForBinding(c, binding)
+	if !ok {
+		return
+	}
+	r = r.WithContext(service.WithAICCConfig(r.Context(), cfg))
 	store, err := service.DefaultAICCUploadStore()
 	if err != nil {
 		aiccUploadError(c, err)
@@ -97,7 +109,7 @@ func CreateAICCUpload(c *gin.Context) {
 		return
 	}
 	defer file.Close()
-	result, err := store.Save(r.Context(), aiccUserID(c), group, kind, part.Header.Get("Content-Type"), file)
+	result, err := store.Save(r.Context(), aiccUserID(c), group, kind, part.Header.Get("Content-Type"), file, binding)
 	if err != nil {
 		aiccUploadError(c, err)
 		return

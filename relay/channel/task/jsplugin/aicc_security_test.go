@@ -2,9 +2,13 @@ package jsplugin
 
 import (
 	"encoding/json"
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/service"
+	"github.com/stretchr/testify/assert"
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/model"
@@ -16,6 +20,22 @@ import (
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
+
+func TestAICCPollDescriptorNeverFollowsCredentialRedirect(t *testing.T) {
+	hits := 0
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits++; w.WriteHeader(200) }))
+	defer target.Close()
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, target.URL, 302) }))
+	defer source.Close()
+	adaptor := New(&pluginruntime.LoadedPlugin{Meta: pluginruntime.Meta{Key: "redirect-test"}})
+	for _, method := range []string{"GET", "POST"} {
+		response, err := adaptor.doFetchDescriptor(source.URL, "", map[string]any{"url": source.URL, "method": method, "headers": map[string]string{"X-Secret": "synthetic-secret", "Authorization": "Bearer synthetic"}})
+		require.NoError(t, err)
+		require.Equal(t, 302, response.StatusCode)
+		response.Body.Close()
+		require.Zero(t, hits)
+	}
+}
 
 func TestAICCReferenceTraversalRejectsCyclesAndExcessiveDepth(t *testing.T) {
 	cycle := map[string]any{}
@@ -37,13 +57,17 @@ func TestAICCVideoReferencesCheckAllSupportedShapes(t *testing.T) {
 	sqlDB.SetMaxOpenConns(1)
 	model.DB = db
 	t.Cleanup(func() { model.DB = old; _ = sqlDB.Close() })
-	require.NoError(t, db.AutoMigrate(&model.AICCAssetOwnership{}, &model.Channel{}))
+	require.NoError(t, db.AutoMigrate(&model.AICCAssetOwnership{}, &model.AICCAssetGroupOwnership{}, &model.Channel{}, &model.AICCAccountAttestation{}))
 	t.Setenv("AICC_ACCESS_KEY_ID", "offline-ak")
 	t.Setenv("AICC_ACCESS_KEY_SECRET", "offline-sk")
-	require.NoError(t, db.Create(&model.Channel{Id: 6, Name: "移动云", Status: 1, Key: "offline", OtherInfo: `{"access_key_id":"offline-ak","access_key_secret":"offline-sk"}`}).Error)
-	require.NoError(t, model.RecordAICCAssetOwnership(1, "asset-private", "group-private"))
+	require.NoError(t, db.Create(&model.Channel{Id: 6, Name: "移动云", Status: 1, Key: "offline", OtherInfo: `{"aicc_enabled":true,"access_key_id":"offline-ak","access_key_secret":"offline-sk","endpoint":"https://example.com","pool_id":"pool"}`}).Error)
+	cfg, err := service.GetAICCConfigForChannel(6)
+	require.NoError(t, err)
+	binding := model.AICCBinding{ChannelID: 6, AICCAccountID: cfg.AICCAccountID}
+	require.NoError(t, model.RecordBoundAICCAssetGroupOwnership(1, "group-private", "LivenessFace", binding))
+	require.NoError(t, model.RecordBoundAICCAssetOwnership(1, "asset-private", "group-private", binding))
 	metadata := `{"image":"asset://asset-private"}`
-	metadataJSON, err := json.Marshal(metadata)
+	metadataJSON, err := common.Marshal(metadata)
 	require.NoError(t, err)
 	requests := []any{
 		map[string]any{"metadata": &metadata},
@@ -73,17 +97,42 @@ func TestAICCVideoReferencesCheckAllSupportedShapes(t *testing.T) {
 		a := New(plugin)
 		a.Init(info)
 		taskErr := a.ValidateRequestAndSetAction(c, info)
-		if uid == 1 {
-			require.Nil(t, taskErr)
-		} else {
-			require.NotNil(t, taskErr)
-			require.Equal(t, http.StatusForbidden, taskErr.StatusCode)
-		}
+		require.NotNil(t, taskErr)
+		require.Equal(t, http.StatusForbidden, taskErr.StatusCode)
 	}
 	require.NoError(t, db.Create(&model.Channel{Id: 7, Name: "other", Status: 1, Key: "offline"}).Error)
 	wrongChannel := 7
 	request := map[string]any{"image": "asset://asset-private"}
 	require.Error(t, validateAICCAssetReferencesForChannel(1, request, &wrongChannel))
 	rightChannel := 6
-	require.NoError(t, validateAICCAssetReferencesForChannel(1, request, &rightChannel))
+	require.ErrorContains(t, validateAICCAssetReferencesForChannel(1, request, &rightChannel), "尚未核实")
+}
+
+func TestExtractAICCAssetIDsPureParser(t *testing.T) {
+	old := model.DB
+	model.DB = nil
+	t.Cleanup(func() { model.DB = old })
+	metadata := `{"image_url":{"url":"asset://asset-one"}}`
+	for _, request := range []any{
+		map[string]any{"metadata": metadata},
+		map[string]any{"metadata": []string{metadata, `{}`}},
+		map[string]any{"metadata": &metadata},
+		map[string]any{"input_reference[]": []string{"https://example.com", "asset-one"}},
+		relaycommon.TaskSubmitReq{Images: []string{"asset://asset-one"}},
+	} {
+		ids, err := service.ExtractAICCAssetIDs(request)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"asset-one"}, ids)
+	}
+	ids, err := service.ExtractAICCAssetIDs(map[string]any{"prompt": "asset://asset-ignore", "text": "asset-ignore", "description": "asset-ignore", "negative_prompt": "asset-ignore", "usage": math.NaN()})
+	require.NoError(t, err)
+	assert.Empty(t, ids)
+	_, err = service.ExtractAICCAssetIDs(map[string]any{"image": "asset://asset-bad%2fpath"})
+	require.Error(t, err)
+	_, err = service.ExtractAICCAssetIDs(map[string]any{"metadata": []string{metadata, "not-json"}})
+	require.Error(t, err)
+	_, err = service.ExtractAICCAssetIDs(make([]any, 100001))
+	require.ErrorContains(t, err, "validation limits")
+	_, err = service.ExtractAICCAssetIDs(map[string]any{"image": "asset://" + strings.Repeat("/", 4)})
+	require.Error(t, err)
 }

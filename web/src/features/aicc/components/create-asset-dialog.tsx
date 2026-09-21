@@ -8,6 +8,7 @@ import { createAsset, uploadAsset, uploadExpiry, type UploadedAsset } from '../a
 import type { Asset } from '../types'
 
 interface CreateAssetDialogProps {
+  channelId: number
   open: boolean
   groupId: string
   groupName: string
@@ -51,10 +52,10 @@ function validateDuration(file: File, type: 'Video' | 'Audio', signal: AbortSign
 }
 
 export function CreateAssetDialog(props: CreateAssetDialogProps) {
-  return <CreateAssetDialogContent key={`${props.groupId}:${props.open}`} {...props} />
+  return <CreateAssetDialogContent key={`${props.channelId}:${props.groupId}:${props.open}`} {...props} />
 }
 
-function CreateAssetDialogContent({ open, groupId, groupName, onOpenChange, onSuccess }: CreateAssetDialogProps) {
+function CreateAssetDialogContent({ channelId, open, groupId, groupName, onOpenChange, onSuccess }: CreateAssetDialogProps) {
   const [stage, setStage] = useState<'idle' | 'uploading' | 'creating'>('idle')
   const [mode, setMode] = useState<'file' | 'url'>('file')
   const [assetName, setAssetName] = useState('')
@@ -144,7 +145,7 @@ function CreateAssetDialogContent({ open, groupId, groupName, onOpenChange, onSu
           setUploaded(null)
           if (assetType !== 'Image') await validateDuration(file, assetType, controller.signal)
           if (!isCurrent()) return
-          const result = await uploadAsset(file, groupId, assetType, controller.signal)
+          const result = await uploadAsset(file, groupId, assetType, channelId, controller.signal)
           if (!isCurrent()) return
           setUploaded(result)
           url = result.url
@@ -154,7 +155,7 @@ function CreateAssetDialogContent({ open, groupId, groupName, onOpenChange, onSu
       phase = 'create'
       setStage('creating')
       armTimeout(60_000)
-      await createAsset({ groupId, assetName: assetName.trim(), assetUrl: url, assetType }, controller.signal)
+      await createAsset({ groupId, assetName: assetName.trim(), assetUrl: url, assetType }, channelId, controller.signal)
       if (!isCurrent()) return
       setSubmitted(true)
       toast.success('入库任务已提交，仍需平台异步校验；请刷新查看状态，并非已可用')

@@ -15,7 +15,7 @@ function deferred<T>() {
 }
 const photo = () => new File(['photo'], 'portrait.jpg', { type: 'image/jpeg' })
 const result = (): api.UploadedAsset => ({ id: 'upload-1', url: 'https://example.com/upload-1', assetType: 'Image', mimeType: 'image/jpeg', bytes: 5, expiresAt: Date.now() + 60_000 })
-const props = () => ({ open: true, groupId: 'g1', groupName: '我的组', onOpenChange: vi.fn(), onSuccess: vi.fn() })
+const props = () => ({ channelId: 7, open: true, groupId: 'g1', groupName: '我的组', onOpenChange: vi.fn(), onSuccess: vi.fn() })
 beforeEach(() => {
   vi.resetAllMocks()
   vi.mocked(api.uploadAsset).mockResolvedValue(result())
@@ -41,12 +41,12 @@ it('defaults to clickable local file input, derives an editable stem, and sends 
   await user.type(screen.getByLabelText('素材名称'), '新照片')
   await user.click(screen.getByRole('button', { name: '确认添加' }))
   expect(screen.getByRole('button', { name: /第 1 步/ })).toBeDisabled()
-  expect(api.uploadAsset).toHaveBeenCalledWith(file, 'g1', 'Image', expect.any(AbortSignal))
+  expect(api.uploadAsset).toHaveBeenCalledWith(file, 'g1', 'Image', 7, expect.any(AbortSignal))
   expect(api.createAsset).not.toHaveBeenCalled()
   const uploaded = result()
   await act(async () => upload.resolve(uploaded))
   expect(screen.getByRole('button', { name: /第 2 步/ })).toBeDisabled()
-  expect(api.createAsset).toHaveBeenCalledWith({ groupId: 'g1', assetName: '新照片', assetUrl: uploaded.url, assetType: 'Image' }, expect.any(AbortSignal))
+  expect(api.createAsset).toHaveBeenCalledWith({ groupId: 'g1', assetName: '新照片', assetUrl: uploaded.url, assetType: 'Image' }, 7, expect.any(AbortSignal))
   expect(toast.success).not.toHaveBeenCalled()
   await act(async () => create.resolve({ status: 'PROCESSING' }))
   expect(toast.success).toHaveBeenCalledWith(expect.stringContaining('并非已可用'))
@@ -92,7 +92,7 @@ it('select A, drop B, cancel picker, then select A uploads the actual final choi
   expect(input.files?.[0]).toBe(a)
   expect(screen.getByLabelText('已选文件')).toHaveTextContent('portrait.jpg')
   await user.click(screen.getByRole('button', { name: '确认添加' }))
-  expect(api.uploadAsset).toHaveBeenCalledWith(a, 'g1', 'Image', expect.any(AbortSignal))
+  expect(api.uploadAsset).toHaveBeenCalledWith(a, 'g1', 'Image', 7, expect.any(AbortSignal))
 })
 
 it('allows drag/drop and clears the selected file when the asset type changes', async () => {
@@ -148,7 +148,7 @@ it('reuses an unexpired upload after create fails, but uploads again after expir
   expect(toast.success).not.toHaveBeenCalled()
 })
 
-it.each(['cancel', 'escape', 'group', 'unmount'])('aborts upload and ignores late upload results on %s', async (reason) => {
+it.each(['cancel', 'escape', 'group', 'channel', 'unmount'])('aborts upload and ignores late upload results on %s', async (reason) => {
   const user = userEvent.setup()
   const upload = deferred<api.UploadedAsset>()
   vi.mocked(api.uploadAsset).mockReturnValue(upload.promise)
@@ -156,11 +156,12 @@ it.each(['cancel', 'escape', 'group', 'unmount'])('aborts upload and ignores lat
   const view = render(<CreateAssetDialog {...callbacks} />)
   await user.upload(screen.getByLabelText('本地素材文件'), photo())
   await user.click(screen.getByRole('button', { name: '确认添加' }))
-  const signal = vi.mocked(api.uploadAsset).mock.calls[0][3]
+  const signal = vi.mocked(api.uploadAsset).mock.calls[0][4]
   if (!signal) throw new Error('upload must receive cancellation signal')
   if (reason === 'cancel') await user.click(screen.getByRole('button', { name: '取消' }))
   if (reason === 'escape') await user.keyboard('{Escape}')
   if (reason === 'group') view.rerender(<CreateAssetDialog {...callbacks} groupId="g2" groupName="新组" />)
+  if (reason === 'channel') view.rerender(<CreateAssetDialog {...callbacks} channelId={8} />)
   if (reason === 'unmount') view.unmount()
   expect(signal.aborted).toBe(true)
   await act(async () => upload.resolve(result()))
@@ -172,7 +173,7 @@ it.each(['cancel', 'escape', 'group', 'unmount'])('aborts upload and ignores lat
     await user.upload(screen.getByLabelText('本地素材文件'), photo())
     vi.mocked(api.uploadAsset).mockResolvedValue(result())
     await user.click(screen.getByRole('button', { name: '确认添加' }))
-    await waitFor(() => expect(api.createAsset).toHaveBeenCalledWith(expect.objectContaining({ groupId: 'g2' }), expect.any(AbortSignal)))
+    await waitFor(() => expect(api.createAsset).toHaveBeenCalledWith(expect.objectContaining({ groupId: 'g2' }), 7, expect.any(AbortSignal)))
   }
 })
 
@@ -185,7 +186,7 @@ it('aborts create on close and suppresses a late create error', async () => {
   await user.upload(screen.getByLabelText('本地素材文件'), photo())
   await user.click(screen.getByRole('button', { name: '确认添加' }))
   await waitFor(() => expect(api.createAsset).toHaveBeenCalledOnce())
-  const signal = vi.mocked(api.createAsset).mock.calls[0][1]
+  const signal = vi.mocked(api.createAsset).mock.calls[0][2]
   if (!signal) throw new Error('create must receive cancellation signal')
   await user.click(screen.getByRole('button', { name: '取消' }))
   expect(signal.aborted).toBe(true)
@@ -202,7 +203,7 @@ it('keeps URL mode available without uploading a local file', async () => {
   await user.type(screen.getByLabelText('公网素材 URL'), 'https://example.com/photo.jpg')
   await user.click(screen.getByRole('button', { name: '确认添加' }))
   expect(api.uploadAsset).not.toHaveBeenCalled()
-  expect(api.createAsset).toHaveBeenCalledWith(expect.objectContaining({ assetUrl: 'https://example.com/photo.jpg' }), expect.any(AbortSignal))
+  expect(api.createAsset).toHaveBeenCalledWith(expect.objectContaining({ assetUrl: 'https://example.com/photo.jpg' }), 7, expect.any(AbortSignal))
 })
 
 it.each([1, 2, 15, 16])('checks local audio duration %s seconds before upload and releases the object URL', async (duration) => {
@@ -230,14 +231,14 @@ it.each([1, 2, 15, 16])('checks local audio duration %s seconds before upload an
     expect(await screen.findByRole('alert')).toHaveTextContent('2–15 秒')
     expect(api.uploadAsset).not.toHaveBeenCalled()
   } else {
-    await waitFor(() => expect(api.uploadAsset).toHaveBeenCalledWith(expect.any(File), 'g1', 'Audio', expect.any(AbortSignal)))
+    await waitFor(() => expect(api.uploadAsset).toHaveBeenCalledWith(expect.any(File), 'g1', 'Audio', 7, expect.any(AbortSignal)))
   }
   expect(revoke).toHaveBeenCalledWith('blob:test-audio')
 })
 
 it('aborts a timed out upload and reports its failed stage', async () => {
   vi.useFakeTimers()
-  vi.mocked(api.uploadAsset).mockImplementation((_file, _group, _type, signal) => new Promise((_resolve, reject) => {
+  vi.mocked(api.uploadAsset).mockImplementation((_file, _group, _type, _channelId, signal) => new Promise((_resolve, reject) => {
     if (!signal) throw new Error('upload must receive cancellation signal')
     signal.addEventListener('abort', () => reject(new Error('canceled')))
   }))

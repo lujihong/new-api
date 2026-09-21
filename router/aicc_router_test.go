@@ -34,7 +34,7 @@ func TestAICCRealAuthenticationScopeMatrix(t *testing.T) {
 		sqlDB, _ := db.DB()
 		sqlDB.Close()
 	})
-	require.NoError(t, db.AutoMigrate(&model.User{}, &model.UserSession{}, &model.Token{}, &model.AuditLog{}, &model.AICCAssetGroupOwnership{}, &model.AICCAssetOwnership{}))
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.UserSession{}, &model.Token{}, &model.AuditLog{}, &model.AICCAssetGroupOwnership{}, &model.AICCAssetOwnership{}, &model.Channel{}, &model.AICCAccountAttestation{}))
 	oldMainType, oldLogType, oldMaster := common.MainDatabaseType(), common.LogDatabaseType(), common.IsMasterNode
 	common.SetMainDatabaseType(common.DatabaseTypeSQLite)
 	common.IsMasterNode = false
@@ -64,9 +64,9 @@ func TestAICCRealAuthenticationScopeMatrix(t *testing.T) {
 		_, _ = w.Write([]byte(`{"state":"OK","body":{"data":[{"groupId":"not-owned"}],"total":1}}`))
 	}))
 	defer upstream.Close()
-	t.Setenv("AICC_ACCESS_KEY_ID", "offline-ak")
-	t.Setenv("AICC_ACCESS_KEY_SECRET", "offline-sk")
-	t.Setenv("AICC_ENDPOINT", upstream.URL)
+	info, err := common.Marshal(map[string]any{"aicc_enabled": true, "access_key_id": "offline-ak", "access_key_secret": "offline-sk", "endpoint": upstream.URL, "pool_id": "CIDC-CORE-00"})
+	require.NoError(t, err)
+	require.NoError(t, db.Create(&model.Channel{Id: 6, Status: common.ChannelStatusEnabled, OtherInfo: string(info)}).Error)
 	engine := gin.New()
 	SetApiRouter(engine)
 	for _, tc := range []struct {
@@ -79,7 +79,8 @@ func TestAICCRealAuthenticationScopeMatrix(t *testing.T) {
 		{"ordinary", "/api/aicc/admin/asset-groups", 403, false},
 		{"disabled", "/api/aicc/admin/asset-groups", 401, false},
 		{"model", "/api/aicc/admin/asset-groups", 401, false},
-		{"admin", "/api/aicc/admin/asset-groups", 200, true},
+		{"admin", "/api/aicc/admin/asset-groups?channel_id=6", 200, true},
+		{"admin", "/api/aicc/admin/asset-groups", 400, false},
 	} {
 		req := httptest.NewRequest("GET", tc.path, nil)
 		req.Header.Set("Authorization", "Bearer "+keys[tc.identity])

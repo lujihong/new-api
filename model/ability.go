@@ -115,7 +115,10 @@ func GetChannel(
 	if err != nil {
 		return nil, err
 	}
-	abilities = filterAbilitiesByConstraints(abilities, model, filters)
+	abilities, err = filterAbilitiesByConstraints(abilities, model, filters)
+	if err != nil {
+		return nil, err
+	}
 	if len(abilities) > 0 {
 		priorities := make([]int64, 0)
 		seen := make(map[int64]bool)
@@ -165,9 +168,9 @@ func GetChannel(
 // filterAbilitiesByConstraints applies the same ChannelSatisfiesFilters
 // predicate used by the memory-cache path. A failed channel lookup fails
 // closed when a task-plugin identity is required and fails open otherwise.
-func filterAbilitiesByConstraints(abilities []Ability, modelName string, filters []dto.ChannelFilter) []Ability {
+func filterAbilitiesByConstraints(abilities []Ability, modelName string, filters []dto.ChannelFilter) ([]Ability, error) {
 	if len(abilities) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	channelIds := make([]int, 0, len(abilities))
@@ -182,10 +185,13 @@ func filterAbilitiesByConstraints(abilities []Ability, modelName string, filters
 
 	var channels []*Channel
 	if err := DB.Where("id IN ?", channelIds).Find(&channels).Error; err != nil {
-		if identityFilterRequiresKey(filters) {
-			return nil
+		if len(filtersByKind(filters, dto.FilterAICCAssetAllowedChannels)) > 0 {
+			return nil, err
 		}
-		return abilities
+		if identityFilterRequiresKey(filters) {
+			return nil, nil
+		}
+		return abilities, nil
 	}
 
 	channelsByID := make(map[int]*Channel, len(channels))
@@ -200,7 +206,7 @@ func filterAbilitiesByConstraints(abilities []Ability, modelName string, filters
 			filtered = append(filtered, ability)
 		}
 	}
-	return filtered
+	return filtered, nil
 }
 
 func identityFilterRequiresKey(filters []dto.ChannelFilter) bool {
@@ -284,10 +290,10 @@ func (channel *Channel) UpdateAbilities(tx *gorm.DB) error {
 		return err
 	}
 
-		// Then add new abilities
-		models_ := channel.GetModels()
-		groups_ := channel.GetGroups()
-		abilitySet := make(map[string]struct{})
+	// Then add new abilities
+	models_ := channel.GetModels()
+	groups_ := channel.GetGroups()
+	abilitySet := make(map[string]struct{})
 	abilities := make([]Ability, 0, len(models_))
 	for _, model := range models_ {
 		for _, group := range groups_ {

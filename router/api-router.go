@@ -207,14 +207,14 @@ func SetApiRouter(router *gin.Engine) {
 		apiRouter.GET("/subscription/epay/notify", controller.SubscriptionEpayNotify)
 		apiRouter.GET("/subscription/epay/return", controller.SubscriptionEpayReturn)
 		apiRouter.POST("/subscription/epay/return", anonymousRequestBodyLimit, controller.SubscriptionEpayReturn)
-			optionRoute := apiRouter.Group("/option")
-			optionRoute.Use(middleware.RootAuth())
-			{
-				optionRoute.GET("/", controller.GetOptions)
-				optionRoute.PUT("/", controller.UpdateOption)
-				optionRoute.GET("/model_discount_models", controller.ListModelDiscountModels)
-				optionRoute.PUT("/passkey/domains", controller.UpdatePasskeyDomains)
-				optionRoute.GET("/model_pricing", controller.GetModelPricingConfig)
+		optionRoute := apiRouter.Group("/option")
+		optionRoute.Use(middleware.RootAuth())
+		{
+			optionRoute.GET("/", controller.GetOptions)
+			optionRoute.PUT("/", controller.UpdateOption)
+			optionRoute.GET("/model_discount_models", controller.ListModelDiscountModels)
+			optionRoute.PUT("/passkey/domains", controller.UpdatePasskeyDomains)
+			optionRoute.GET("/model_pricing", controller.GetModelPricingConfig)
 			optionRoute.PATCH("/model_pricing", controller.UpdateModelPricingConfig)
 			optionRoute.POST("/model_pricing/convert", controller.PreviewModelPricingConversion)
 			optionRoute.POST("/model_pricing/preview", controller.PreviewModelPricing)
@@ -381,6 +381,8 @@ func SetApiRouter(router *gin.Engine) {
 		apiRouter.GET("/aicc/upload-content/:id", controller.GetAICCUploadContent)
 		apiRouter.HEAD("/aicc/upload-content/:id", controller.GetAICCUploadContent)
 		apiRouter.POST("/aicc/admin/recover-group", middleware.RootAuth(), controller.RecoverAICCGroup)
+		apiRouter.GET("/aicc/admin/account-binding", middleware.RootAuth(), controller.AICCAccountBinding)
+		apiRouter.POST("/aicc/admin/account-binding", middleware.RootAuth(), middleware.CriticalRateLimit(), controller.AICCAccountBinding)
 		aiccManagement := apiRouter.Group("/aicc/admin", middleware.AdminAuth(), controller.AICCManagementScope)
 		{
 			// Management never creates/authenticates resources or claims ownership on reads.
@@ -393,11 +395,11 @@ func SetApiRouter(router *gin.Engine) {
 			aiccManagement.PUT("/assets/:id", controller.UpdateAICCAsset)
 			aiccManagement.DELETE("/assets/:id", controller.DeleteAICCAsset)
 		}
-			aiccRoute := apiRouter.Group("/aicc")
-			aiccRoute.Use(middleware.TokenOrUserAuth())
-			{
-				aiccRoute.GET("/channels", controller.ListAICCChannels)
-				aiccRoute.POST("/uploads", middleware.CriticalRateLimit(), controller.CreateAICCUpload)
+		aiccRoute := apiRouter.Group("/aicc")
+		aiccRoute.Use(middleware.TokenOrUserAuth())
+		{
+			aiccRoute.GET("/channels", controller.ListAICCChannels)
+			aiccRoute.POST("/uploads", middleware.CriticalRateLimit(), controller.CreateAICCUpload)
 			aiccRoute.POST("/auth/session", controller.CreateAICCH5Session)
 			aiccRoute.GET("/auth/session/:token", controller.QueryAICCGroupByBytedToken)
 			aiccRoute.GET("/auth/group", controller.QueryAICCGroupByBytedToken)

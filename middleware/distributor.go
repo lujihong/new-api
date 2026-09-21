@@ -45,6 +45,49 @@ func Distribute() func(c *gin.Context) {
 			abortWithOpenAiMessage(c, http.StatusBadRequest, i18n.T(c, i18n.MsgDistributorInvalidRequest, map[string]any{"Error": err.Error()}))
 			return
 		}
+		// Select a channel for the user
+		// check token model mapping
+		modelLimitEnable := common.GetContextKeyBool(c, constant.ContextKeyTokenModelLimitEnabled)
+		if modelLimitEnable {
+			s, ok := common.GetContextKey(c, constant.ContextKeyTokenModelLimit)
+			if !ok {
+				// token model limit is empty, all models are not allowed
+				abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorTokenNoModelAccess))
+				return
+			}
+			var tokenModelLimit map[string]bool
+			tokenModelLimit, ok = s.(map[string]bool)
+			if !ok {
+				tokenModelLimit = map[string]bool{}
+			}
+			if !tokenModelLimitAllows(tokenModelLimit, modelRequest.Model) {
+				abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorTokenModelForbidden, map[string]any{"Model": modelRequest.Model}))
+				return
+			}
+		}
+		usingGroup := common.GetContextKeyString(c, constant.ContextKeyUsingGroup)
+		// check path is /pg/chat/completions
+		if strings.HasPrefix(c.Request.URL.Path, "/pg/chat/completions") {
+			playgroundRequest := &dto.PlayGroundRequest{}
+			err = common.UnmarshalBodyReusable(c, playgroundRequest)
+			if err != nil {
+				abortWithOpenAiMessage(c, http.StatusBadRequest, i18n.T(c, i18n.MsgDistributorInvalidPlayground, map[string]any{"Error": err.Error()}))
+				return
+			}
+			if playgroundRequest.Group != "" {
+				if !service.GroupInUserUsableGroups(usingGroup, playgroundRequest.Group) && playgroundRequest.Group != usingGroup {
+					abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorGroupAccessDenied))
+					return
+				}
+				usingGroup = playgroundRequest.Group
+				common.SetContextKey(c, constant.ContextKeyUsingGroup, usingGroup)
+			}
+		}
+
+		if err := appendAICCAssetRoutingFilter(c, constraints); err != nil {
+			abortWithOpenAiMessage(c, http.StatusForbidden, "AICC asset reference authorization failed", types.ErrorCode("aicc_asset_forbidden"))
+			return
+		}
 		if pin, found, overridden := constraints.ResolvedPin(); found {
 			for _, lost := range overridden {
 				logger.LogWarn(c, fmt.Sprintf(
@@ -69,6 +112,22 @@ func Distribute() func(c *gin.Context) {
 				}
 				return
 			}
+			allowed := false
+			if usingGroup == "auto" {
+				for _, group := range service.GetRequestAutoGroups(c, common.GetContextKeyString(c, constant.ContextKeyUserGroup)) {
+					if model.IsChannelEnabledForGroupModel(group, modelRequest.Model, channel.Id) {
+						common.SetContextKey(c, constant.ContextKeyAutoGroup, group)
+						allowed = true
+						break
+					}
+				}
+			} else {
+				allowed = model.IsChannelEnabledForGroupModel(usingGroup, modelRequest.Model, channel.Id)
+			}
+			if !allowed {
+				abortWithOpenAiMessage(c, http.StatusForbidden, "pinned channel does not allow this group and model")
+				return
+			}
 			if ok, kind := model.ChannelSatisfiesFilters(channel, modelRequest.Model, constraints.Filters); !ok {
 				if kind == taskdto.FilterTaskPluginIdentity {
 					logTaskPluginChannelDecision(c, channel, modelRequest.Model, "channel_rejected", "identity_mismatch")
@@ -77,26 +136,6 @@ func Distribute() func(c *gin.Context) {
 				return
 			}
 		} else {
-			// Select a channel for the user
-			// check token model mapping
-			modelLimitEnable := common.GetContextKeyBool(c, constant.ContextKeyTokenModelLimitEnabled)
-			if modelLimitEnable {
-				s, ok := common.GetContextKey(c, constant.ContextKeyTokenModelLimit)
-				if !ok {
-					// token model limit is empty, all models are not allowed
-					abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorTokenNoModelAccess))
-					return
-				}
-				var tokenModelLimit map[string]bool
-				tokenModelLimit, ok = s.(map[string]bool)
-				if !ok {
-					tokenModelLimit = map[string]bool{}
-				}
-				if !tokenModelLimitAllows(tokenModelLimit, modelRequest.Model) {
-					abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorTokenModelForbidden, map[string]any{"Model": modelRequest.Model}))
-					return
-				}
-			}
 
 			if shouldSelectChannel {
 				if modelRequest.Model == "" {
@@ -104,24 +143,6 @@ func Distribute() func(c *gin.Context) {
 					return
 				}
 				var selectGroup string
-				usingGroup := common.GetContextKeyString(c, constant.ContextKeyUsingGroup)
-				// check path is /pg/chat/completions
-				if strings.HasPrefix(c.Request.URL.Path, "/pg/chat/completions") {
-					playgroundRequest := &dto.PlayGroundRequest{}
-					err = common.UnmarshalBodyReusable(c, playgroundRequest)
-					if err != nil {
-						abortWithOpenAiMessage(c, http.StatusBadRequest, i18n.T(c, i18n.MsgDistributorInvalidPlayground, map[string]any{"Error": err.Error()}))
-						return
-					}
-					if playgroundRequest.Group != "" {
-						if !service.GroupInUserUsableGroups(usingGroup, playgroundRequest.Group) && playgroundRequest.Group != usingGroup {
-							abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorGroupAccessDenied))
-							return
-						}
-						usingGroup = playgroundRequest.Group
-						common.SetContextKey(c, constant.ContextKeyUsingGroup, usingGroup)
-					}
-				}
 
 				if preferredChannelID, found := service.GetPreferredChannelByAffinity(c, modelRequest.Model, usingGroup); found {
 					affinityUsable := false
@@ -792,4 +813,50 @@ func extractModelNameFromGeminiPath(path string) string {
 
 	// 返回模型名部分
 	return path[startIndex : startIndex+colonIndex]
+}
+
+// appendAICCAssetRoutingFilter inspects both the prepared request and original
+// text fields. Reusable parsers preserve the body for subsequent relay stages.
+func appendAICCAssetRoutingFilter(c *gin.Context, constraints *taskdto.ChannelConstraints) error {
+	var requests []any
+	if request, exists := c.Get("task_request"); exists {
+		requests = append(requests, request)
+	}
+	if c.Request.Method != http.MethodGet && c.Request.Method != http.MethodHead {
+		switch c.ContentType() {
+		case gin.MIMEMultipartPOSTForm:
+			form, err := common.ParseMultipartFormReusable(c)
+			if err != nil {
+				return err
+			}
+			if form != nil {
+				fields := make(map[string]any, len(form.Value))
+				for key, values := range form.Value {
+					fields[key] = values
+				}
+				requests = append(requests, fields)
+			}
+		case gin.MIMEJSON, "":
+			if c.Request.Body != nil && c.Request.Body != http.NoBody {
+				var body any
+				if err := common.UnmarshalBodyReusable(c, &body); err != nil {
+					return err
+				}
+				requests = append(requests, body)
+			}
+		}
+	}
+	ids, err := service.ExtractAICCAssetIDs(requests)
+	if err != nil {
+		return err
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	filter, err := service.AICCAssetChannelFilter(c.GetInt("id"), ids)
+	if err != nil {
+		return err
+	}
+	constraints.AddFilter(filter)
+	return nil
 }

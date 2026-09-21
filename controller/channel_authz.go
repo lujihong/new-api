@@ -24,6 +24,12 @@ func channelHasSensitiveChanges(channel *PatchChannel, origin *model.Channel, re
 	if _, ok := requestData["setting"]; ok && !equalStringPtr(channel.Setting, origin.Setting) {
 		return true
 	}
+	if _, ok := requestData["aicc_account_id"]; ok && channel.AICCAccountID != origin.AICCAccountID {
+		return true
+	}
+	if _, ok := requestData["other_info"]; ok && channel.OtherInfo != origin.OtherInfo {
+		return true
+	}
 	if _, ok := requestData["other"]; ok && channel.Other != origin.Other {
 		return true
 	}
@@ -71,6 +77,8 @@ var channelSensitiveFields = map[string]struct{}{
 	"other":               {},
 	"settings":            {},
 	"key_mode":            {},
+	"aicc_account_id":     {},
+	"other_info":          {},
 }
 
 // channelOperationalFields lists fields managed by operation endpoints instead
@@ -128,7 +136,6 @@ var channelNonSensitiveFields = map[string]struct{}{
 	"status_code_mapping": {},
 	"priority":            {},
 	"auto_ban":            {},
-	"other_info":          {},
 	"tag":                 {},
 	"remark":              {},
 	"channel_info":        {},

@@ -9,6 +9,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
@@ -16,13 +17,34 @@ import (
 	"gorm.io/gorm"
 )
 
+var aiccMockHandlers = map[*gorm.DB]http.HandlerFunc{}
+
+func aiccTestBinding(t *testing.T) model.AICCBinding {
+	t.Helper()
+	cfg, err := service.GetAICCConfigForChannel(1)
+	require.NoError(t, err)
+	return aiccBinding(cfg)
+}
+
 func setupAICCTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	previousDB := model.DB
 	db, err := gorm.Open(sqlite.Open("file:aicc-controller-test?mode=memory&cache=shared"), &gorm.Config{})
 	require.NoError(t, err)
 	model.DB = db
-	require.NoError(t, db.AutoMigrate(&model.AICCAssetGroupOwnership{}, &model.AICCAssetOwnership{}, &model.AICCAuthSession{}))
+	require.NoError(t, db.AutoMigrate(&model.Channel{}, &model.AICCAccountAttestation{}, &model.AICCAssetGroupOwnership{}, &model.AICCAssetOwnership{}, &model.AICCAuthSession{}))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if handler := aiccMockHandlers[db]; handler != nil {
+			handler(w, r)
+		} else {
+			t.Error("unexpected AICC upstream request")
+			w.WriteHeader(500)
+		}
+	}))
+	t.Cleanup(func() { srv.Close(); delete(aiccMockHandlers, db) })
+	info, err := common.Marshal(map[string]any{"aicc_enabled": true, "access_key_id": "test-ak", "access_key_secret": "test-sk", "endpoint": srv.URL, "pool_id": "test-pool"})
+	require.NoError(t, err)
+	require.NoError(t, db.Create(&model.Channel{Id: 1, Name: "AICC test", Status: common.ChannelStatusEnabled, OtherInfo: string(info)}).Error)
 	t.Cleanup(func() {
 		model.DB = previousDB
 		sqlDB, err := db.DB()
@@ -45,25 +67,78 @@ func newAICCContext(method, path, body string, userID, role int) (*gin.Context, 
 
 func withAICCMock(t *testing.T, handler http.HandlerFunc) {
 	t.Helper()
-	srv := httptest.NewServer(handler)
-	t.Cleanup(srv.Close)
-	t.Setenv("AICC_ACCESS_KEY_ID", "test-ak")
-	t.Setenv("AICC_ACCESS_KEY_SECRET", "test-sk")
-	t.Setenv("AICC_ENDPOINT", srv.URL)
+	db := model.DB
+	previous := aiccMockHandlers[db]
+	aiccMockHandlers[db] = handler
+	t.Cleanup(func() { aiccMockHandlers[db] = previous })
+}
+
+func TestAICCAccountBindingRequiresRootEvidence(t *testing.T) {
+	db := setupAICCTestDB(t)
+	require.NoError(t, db.Model(&model.Channel{}).Where("id = ?", 1).Update("key", "fake-video-key").Error)
+	for _, role := range []int{common.RoleCommonUser, common.RoleAdminUser} {
+		c, w := newAICCContext("GET", "/api/aicc/admin/account-binding?channel_id=1", "", 101, role)
+		AICCAccountBinding(c)
+		require.Equal(t, 403, w.Code)
+	}
+	c, w := newAICCContext("GET", "/api/aicc/admin/account-binding?channel_id=1", "", 101, common.RoleRootUser)
+	c.Set("token_id", 1)
+	AICCAccountBinding(c)
+	require.Equal(t, 403, w.Code)
+	ch, err := model.GetChannelById(1, true)
+	require.NoError(t, err)
+	fp, err := service.AICCChannelCredentialFingerprint(*ch)
+	require.NoError(t, err)
+	body, err := common.Marshal(map[string]any{"upstreamSubject": "verified-test-account", "evidence": "test control panel evidence, no secrets", "configFingerprint": fp, "confirmed": true})
+	require.NoError(t, err)
+	c, w = newAICCContext("POST", "/api/aicc/admin/account-binding?channel_id=1", string(body), 101, common.RoleRootUser)
+	AICCAccountBinding(c)
+	require.Equal(t, 200, w.Code)
+	require.Contains(t, w.Body.String(), `"verified":true`)
+	var row model.AICCAccountAttestation
+	require.NoError(t, db.First(&row).Error)
+	require.Equal(t, 101, row.ActorUserID)
+	require.Equal(t, "verified-test-account", row.UpstreamSubject)
+}
+
+func TestAICCAuthenticationWithoutStatusChecksBoundGroupDetails(t *testing.T) {
+	for _, kind := range []string{"LivenessFace", "AIGC"} {
+		t.Run(kind, func(t *testing.T) {
+			setupAICCTestDB(t)
+			calls := 0
+			withAICCMock(t, func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				if r.Method == http.MethodPost {
+					_, _ = w.Write([]byte(`{"state":"OK","body":"group-verified"}`))
+					return
+				}
+				require.Equal(t, "/api/openapi-maas/exp/aicc/v2/asset-group/group-verified", r.URL.Path)
+				_, _ = w.Write([]byte(`{"state":"OK","body":{"groupId":"group-verified","groupType":"` + kind + `"}}`))
+			})
+			require.NoError(t, model.RecordBoundAICCAuthSession(101, "token", 1800, aiccTestBinding(t)))
+			c, w := newAICCContext("POST", "/api/aicc/auth/group", `{"bytedToken":"token"}`, 101, common.RoleCommonUser)
+			QueryAICCGroupByBytedToken(c)
+			require.Equal(t, 200, w.Code)
+			require.Equal(t, 2, calls)
+			owned, err := model.UserOwnsAICCAssetGroup(101, "group-verified")
+			require.NoError(t, err)
+			require.Equal(t, kind == "LivenessFace", owned)
+		})
+	}
 }
 
 func TestAICCControllerAuthenticationStatusAndOwnership(t *testing.T) {
 	setupAICCTestDB(t)
 	responses := []string{
 		`{"state":"OK","body":{"status":"PROCESSING"}}`,
-		`{"state":"OK","body":{"groupId":"live-group","assetList":[{"assetId":"live-asset"}]}}`,
+		`{"state":"OK","body":{"status":"SUCCESS","groupId":"live-group","assetList":[{"assetId":"live-asset"}]}}`,
 	}
 	call := 0
 	withAICCMock(t, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(responses[call]))
 		call++
 	})
-	require.NoError(t, model.RecordAICCAuthSession(101, "token", 1800))
+	require.NoError(t, model.RecordBoundAICCAuthSession(101, "token", 1800, aiccTestBinding(t)))
 
 	for i, wantAuthenticated := range []bool{false, true} {
 		ctx, recorder := newAICCContext(http.MethodGet, "/api/aicc/auth/session/token", "", 101, common.RoleCommonUser)
@@ -133,7 +208,7 @@ func TestAICCControllerRejectsForeignResourceBeforeUpstream(t *testing.T) {
 			path:   "/api/aicc/asset-groups/foreign-group",
 			handle: GetAICCAssetGroup,
 			seed: func(t *testing.T) {
-				require.NoError(t, model.RecordAICCAssetGroupOwnership(202, "foreign-group", "AIGC"))
+				require.NoError(t, model.RecordBoundAICCAssetGroupOwnership(202, "foreign-group", "AIGC", aiccTestBinding(t)))
 			},
 		},
 		{
@@ -141,7 +216,7 @@ func TestAICCControllerRejectsForeignResourceBeforeUpstream(t *testing.T) {
 			path:   "/api/aicc/assets/foreign-asset",
 			handle: GetAICCAsset,
 			seed: func(t *testing.T) {
-				require.NoError(t, model.RecordAICCAssetOwnership(202, "foreign-asset", "foreign-group"))
+				require.NoError(t, model.RecordBoundAICCAssetOwnership(202, "foreign-asset", "foreign-group", aiccTestBinding(t)))
 			},
 		},
 		{
@@ -149,7 +224,7 @@ func TestAICCControllerRejectsForeignResourceBeforeUpstream(t *testing.T) {
 			path:   "/api/aicc/assets/foreign-asset",
 			handle: UpdateAICCAsset,
 			seed: func(t *testing.T) {
-				require.NoError(t, model.RecordAICCAssetOwnership(202, "foreign-asset", "foreign-group"))
+				require.NoError(t, model.RecordBoundAICCAssetOwnership(202, "foreign-asset", "foreign-group", aiccTestBinding(t)))
 			},
 		},
 	} {
@@ -185,16 +260,16 @@ func TestAICCControllerAdminCanManageAndDeleteOwnership(t *testing.T) {
 			t.Fatalf("unexpected method: %s", r.Method)
 		}
 	})
-	require.NoError(t, model.RecordAICCAssetGroupOwnership(202, "foreign-group", "AIGC"))
-	require.NoError(t, model.RecordAICCAssetOwnership(202, "foreign-asset", "foreign-group"))
+	require.NoError(t, model.RecordBoundAICCAssetGroupOwnership(202, "foreign-group", "AIGC", aiccTestBinding(t)))
+	require.NoError(t, model.RecordBoundAICCAssetOwnership(202, "foreign-asset", "foreign-group", aiccTestBinding(t)))
 
-	groupCtx, groupRecorder := newAICCContext(http.MethodGet, "/api/aicc/admin/asset-groups/foreign-group", "", 999, common.RoleRootUser)
+	groupCtx, groupRecorder := newAICCContext(http.MethodGet, "/api/aicc/admin/asset-groups/foreign-group?channel_id=1", "", 999, common.RoleRootUser)
 	groupCtx.Set("aicc_management_scope", true)
 	groupCtx.Params = gin.Params{{Key: "id", Value: "foreign-group"}}
 	GetAICCAssetGroup(groupCtx)
 	assert.Equal(t, http.StatusOK, groupRecorder.Code)
 
-	assetCtx, assetRecorder := newAICCContext(http.MethodDelete, "/api/aicc/admin/assets/foreign-asset", "", 999, common.RoleRootUser)
+	assetCtx, assetRecorder := newAICCContext(http.MethodDelete, "/api/aicc/admin/assets/foreign-asset?channel_id=1", "", 999, common.RoleRootUser)
 	assetCtx.Set("aicc_management_scope", true)
 	assetCtx.Params = gin.Params{{Key: "id", Value: "foreign-asset"}}
 	DeleteAICCAsset(assetCtx)

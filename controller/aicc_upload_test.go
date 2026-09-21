@@ -49,7 +49,7 @@ func TestAICCUploadControllerDeadlineSupport(t *testing.T) {
 	rec := httptest.NewRecorder()
 	unsupported, _ := gin.CreateTestContext(rec)
 	unsupported.Set("id", 101)
-	unsupported.Request = httptest.NewRequest(http.MethodPost, "/api/aicc/uploads", nil)
+	unsupported.Request = httptest.NewRequest(http.MethodPost, "/api/aicc/uploads?channel_id=1", nil)
 	CreateAICCUpload(unsupported)
 	require.Equal(t, 503, rec.Code)
 	require.Len(t, aiccUploadAdmission, 0)
@@ -59,7 +59,7 @@ func TestAICCUploadControllerDeadlineSupport(t *testing.T) {
 	server := httptest.NewServer(engine)
 	defer server.Close()
 	c, _ = aiccUploadControllerRequest(t, aiccUploadControllerPNG(t), "mine", "Image", "image/png")
-	req, e := http.NewRequest(http.MethodPost, server.URL+"/api/aicc/uploads", c.Request.Body)
+	req, e := http.NewRequest(http.MethodPost, server.URL+"/api/aicc/uploads?channel_id=1", c.Request.Body)
 	require.NoError(t, e)
 	req.Header = c.Request.Header
 	response, e := server.Client().Do(req)
@@ -82,8 +82,9 @@ func setupAICCUploadController(t *testing.T) {
 		system_setting.TaskPublicAddress = base
 		system_setting.ServerAddress = fallback
 	})
-	require.NoError(t, model.RecordAICCAssetGroupOwnership(101, "mine", "AIGC"))
-	require.NoError(t, model.RecordAICCAssetGroupOwnership(202, "other", "AIGC"))
+	binding := aiccTestBinding(t)
+	require.NoError(t, model.RecordBoundAICCAssetGroupOwnership(101, "mine", "AIGC", binding))
+	require.NoError(t, model.RecordBoundAICCAssetGroupOwnership(202, "other", "AIGC", binding))
 }
 func aiccUploadControllerPNG(t *testing.T) []byte {
 	var b bytes.Buffer
@@ -109,7 +110,7 @@ func aiccUploadControllerRequest(t *testing.T, data []byte, group, kind, mt stri
 	c, _ := gin.CreateTestContext(&aiccUploadDeadlineRecorder{ResponseRecorder: rec})
 	c.Set("id", 101)
 	c.Set("role", common.RoleCommonUser)
-	c.Request = httptest.NewRequest(http.MethodPost, "http://attacker.example/api/aicc/uploads", &b)
+	c.Request = httptest.NewRequest(http.MethodPost, "http://attacker.example/api/aicc/uploads?channel_id=1", &b)
 	c.Request.Header.Set("Content-Type", w.FormDataContentType())
 	return c, rec
 }
@@ -221,7 +222,7 @@ func TestAICCUploadControllerAuthTypesAndRequestLimits(t *testing.T) {
 	rec = httptest.NewRecorder()
 	c, _ = gin.CreateTestContext(&aiccUploadDeadlineRecorder{ResponseRecorder: rec})
 	c.Set("id", 101)
-	c.Request = httptest.NewRequest(http.MethodPost, "/api/aicc/uploads", io.MultiReader(&prefix, io.LimitReader(aiccUploadControllerZeros{}, service.AICCUploadRequestLimit+1)))
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/aicc/uploads?channel_id=1", io.MultiReader(&prefix, io.LimitReader(aiccUploadControllerZeros{}, service.AICCUploadRequestLimit+1)))
 	c.Request.Header.Set("Content-Type", w.FormDataContentType())
 	CreateAICCUpload(c)
 	require.Equal(t, 413, rec.Code)
@@ -233,6 +234,30 @@ func TestAICCUploadControllerAuthTypesAndRequestLimits(t *testing.T) {
 type aiccUploadControllerZeros struct{}
 
 func (aiccUploadControllerZeros) Read(p []byte) (int, error) { clear(p); return len(p), nil }
+func TestAICCUploadControllerRequiresCurrentBinding(t *testing.T) {
+	setupAICCUploadController(t)
+	data := aiccUploadControllerPNG(t)
+	for _, query := range []string{"", "channel_id=0", "channel_id=-1", "channel_id=x", "channel_id=1&channel_id=2", "channel_id=99999999999999999999999"} {
+		c, rec := aiccUploadControllerRequest(t, data, "mine", "Image", "image/png")
+		c.Request.URL.RawQuery = query
+		CreateAICCUpload(c)
+		require.Equal(t, 400, rec.Code, query)
+	}
+	c, rec := aiccUploadControllerRequest(t, data, "mine", "Image", "image/png")
+	c.Request.URL.RawQuery = "channel_id=2"
+	CreateAICCUpload(c)
+	require.Equal(t, 409, rec.Code)
+	require.NoError(t, model.RecordAICCAssetGroupOwnership(101, "legacy", "AIGC"))
+	c, rec = aiccUploadControllerRequest(t, data, "legacy", "Image", "image/png")
+	CreateAICCUpload(c)
+	require.Equal(t, 403, rec.Code)
+	// Changing an administrator account label changes the conservative snapshot.
+	require.NoError(t, model.DB.Model(&model.Channel{}).Where("id = ?", 1).Update("aicc_account_id", "rotated-account").Error)
+	c, rec = aiccUploadControllerRequest(t, data, "mine", "Image", "image/png")
+	CreateAICCUpload(c)
+	require.Equal(t, 409, rec.Code)
+}
+
 func TestAICCUploadControllerSpillCleanupAndFallback(t *testing.T) {
 	setupAICCUploadController(t)
 	system_setting.TaskPublicAddress = ""

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -165,7 +166,8 @@ func RunTaskPollingOnce(ctx context.Context, report func(processed, total int)) 
 		}
 		summary.PlatformsScanned++
 		taskChannelM := make(map[int][]string)
-		taskM := make(map[string]*model.Task)
+		tasksByChannel := make(map[int]map[string]*model.Task)
+		ambiguousByChannel := make(map[int]map[string]bool)
 		nullTaskIds := make([]int64, 0)
 		for _, task := range tasks {
 			upstreamID := task.GetUpstreamTaskID()
@@ -174,7 +176,17 @@ func RunTaskPollingOnce(ctx context.Context, report func(processed, total int)) 
 				nullTaskIds = append(nullTaskIds, task.ID)
 				continue
 			}
-			taskM[upstreamID] = task
+			if tasksByChannel[task.ChannelId] == nil {
+				tasksByChannel[task.ChannelId] = make(map[string]*model.Task)
+				ambiguousByChannel[task.ChannelId] = make(map[string]bool)
+			}
+			if tasksByChannel[task.ChannelId][upstreamID] != nil || ambiguousByChannel[task.ChannelId][upstreamID] {
+				delete(tasksByChannel[task.ChannelId], upstreamID)
+				ambiguousByChannel[task.ChannelId][upstreamID] = true
+				logger.LogWarn(ctx, "duplicate upstream task identity within channel; polling paused")
+				continue
+			}
+			tasksByChannel[task.ChannelId][upstreamID] = task
 			taskChannelM[task.ChannelId] = append(taskChannelM[task.ChannelId], upstreamID)
 		}
 		if len(nullTaskIds) > 0 {
@@ -193,7 +205,21 @@ func RunTaskPollingOnce(ctx context.Context, report func(processed, total int)) 
 			continue
 		}
 
-		DispatchPlatformUpdate(ctx, platform, taskChannelM, taskM)
+		var channelWorkers sync.WaitGroup
+		for channelID, ids := range taskChannelM {
+			validIDs := make([]string, 0, len(ids))
+			for _, id := range ids {
+				if tasksByChannel[channelID][id] != nil {
+					validIDs = append(validIDs, id)
+				}
+			}
+			if len(validIDs) > 0 {
+				channelWorkers.Go(func() {
+					DispatchPlatformUpdate(ctx, platform, map[int][]string{channelID: validIDs}, tasksByChannel[channelID])
+				})
+			}
+		}
+		channelWorkers.Wait()
 	}
 	if report != nil && ctx.Err() == nil {
 		report(totalPlatforms, totalPlatforms)
@@ -236,7 +262,7 @@ func UpdateBatchTasks(ctx context.Context, adaptor BatchTaskPollingAdaptor, task
 	return nil
 }
 
-func updateBatchTasks(ctx context.Context, adaptor BatchTaskPollingAdaptor, channelId int, taskIds []string, taskM map[string]*model.Task) error {
+func updateBatchTasks(ctx context.Context, adaptor BatchTaskPollingAdaptor, channelId int, taskIds []string, taskM map[string]*model.Task) (resultErr error) {
 	logger.LogInfo(ctx, fmt.Sprintf("渠道 #%d 未完成的任务有: %d", channelId, len(taskIds)))
 	if ctx.Err() != nil {
 		return ctx.Err()
@@ -244,25 +270,10 @@ func updateBatchTasks(ctx context.Context, adaptor BatchTaskPollingAdaptor, chan
 	if len(taskIds) == 0 {
 		return nil
 	}
-	ch, err := model.CacheGetChannel(channelId)
+	// Use one authoritative configuration for both validation and dispatch.
+	ch, err := model.GetChannelById(channelId, true)
 	if err != nil {
-		common.SysLog(fmt.Sprintf("CacheGetChannel: %v", err))
-		// Collect DB primary key IDs for bulk update (taskIds are upstream IDs, not task_id column values)
-		var failedIDs []int64
-		for _, upstreamID := range taskIds {
-			if t, ok := taskM[upstreamID]; ok {
-				failedIDs = append(failedIDs, t.ID)
-			}
-		}
-		err = model.TaskBulkUpdateByID(failedIDs, map[string]any{
-			"fail_reason": fmt.Sprintf("获取渠道信息失败，请联系管理员，渠道ID：%d", channelId),
-			"status":      "FAILURE",
-			"progress":    "100%",
-		})
-		if err != nil {
-			common.SysLog(fmt.Sprintf("UpdateSunoTask error: %v", err))
-		}
-		return err
+		return pauseTasksForUnavailableChannel(ctx, channelId, taskIds, taskM, err)
 	}
 	proxy := ch.GetSetting().Proxy
 	baseURL := ch.GetBaseURL()
@@ -270,10 +281,31 @@ func updateBatchTasks(ctx context.Context, adaptor BatchTaskPollingAdaptor, chan
 		baseURL = constant.GetChannelBaseURL(ch.Type)
 	}
 	tasks := make([]*model.Task, 0, len(taskIds))
+	eligible := make(map[string]*model.Task, len(taskIds))
+	var pauseErr error
+	defer func() { resultErr = errors.Join(resultErr, pauseErr) }()
 	for _, upstreamID := range taskIds {
-		if task := taskM[upstreamID]; task != nil {
-			tasks = append(tasks, task)
+		task := taskM[upstreamID]
+		if task == nil || task.ChannelId != channelId || eligible[upstreamID] != nil {
+			continue
 		}
+		reason := ""
+		if aiccTaskChannel(ch) && !hasAICCTaskSnapshot(task) {
+			reason = "缺少创建时账号来源快照"
+		} else if hasAICCTaskSnapshot(task) {
+			if err := ValidateAICCTaskSource(task, ch); err != nil {
+				reason = err.Error()
+			}
+		}
+		if reason != "" {
+			pauseErr = errors.Join(pauseErr, pauseAICCTask(ctx, task, reason))
+			continue
+		}
+		tasks = append(tasks, task)
+		eligible[upstreamID] = task
+	}
+	if len(tasks) == 0 {
+		return nil
 	}
 	info := &relaycommon.RelayInfo{}
 	info.ChannelMeta = &relaycommon.ChannelMeta{ChannelBaseUrl: baseURL}
@@ -307,8 +339,8 @@ func updateBatchTasks(ctx context.Context, adaptor BatchTaskPollingAdaptor, chan
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		task := taskM[upstreamID]
-		if task == nil {
+		task := eligible[upstreamID]
+		if task == nil || responseItem == nil {
 			logger.LogWarn(ctx, fmt.Sprintf("Batch task response ignored: unknown task_id=%s", upstreamID))
 			continue
 		}
@@ -327,6 +359,7 @@ func updateBatchTasks(ctx context.Context, adaptor BatchTaskPollingAdaptor, chan
 			}
 			continue
 		}
+		clearAICCTaskPause(task)
 		if isNonTerminalPollStatus(parsedStatus) {
 			task.PrivateData.PollFailures = 0
 		}
@@ -429,22 +462,7 @@ func updateVideoTasks(ctx context.Context, platform constant.TaskPlatform, chann
 	}
 	cacheGetChannel, err := model.CacheGetChannel(channelId)
 	if err != nil {
-		// Collect DB primary key IDs for bulk update (taskIds are upstream IDs, not task_id column values)
-		var failedIDs []int64
-		for _, upstreamID := range taskIds {
-			if t, ok := taskM[upstreamID]; ok {
-				failedIDs = append(failedIDs, t.ID)
-			}
-		}
-		errUpdate := model.TaskBulkUpdateByID(failedIDs, map[string]any{
-			"fail_reason": fmt.Sprintf("Failed to get channel info, channel ID: %d", channelId),
-			"status":      "FAILURE",
-			"progress":    "100%",
-		})
-		if errUpdate != nil {
-			common.SysLog(fmt.Sprintf("UpdateVideoTask error: %v", errUpdate))
-		}
-		return fmt.Errorf("CacheGetChannel failed: %w", err)
+		return pauseTasksForUnavailableChannel(ctx, channelId, taskIds, taskM, err)
 	}
 	adaptor := GetTaskAdaptorFunc(platform)
 	if adaptor == nil {
@@ -478,6 +496,76 @@ func updateVideoTasks(ctx context.Context, platform constant.TaskPlatform, chann
 	return nil
 }
 
+const aiccTaskPausePrefix = "AICC任务已暂停："
+
+func aiccTaskChannel(ch *model.Channel) bool {
+	if ch == nil {
+		return false
+	}
+	info := ch.GetOtherInfo()
+	if info["aicc_enabled"] == true {
+		return true
+	}
+	// Legacy AICC used DoubaoVideo with AK configuration. Type 54 alone is
+	// also used by ordinary Doubao channels and must not pause all video tasks.
+	accessKeyID, _ := info["access_key_id"].(string)
+	return ch.Type == constant.ChannelTypeDoubaoVideo && strings.TrimSpace(accessKeyID) != ""
+}
+
+func hasAICCTaskSnapshot(task *model.Task) bool {
+	return task != nil && task.PrivateData.Execution != nil && task.PrivateData.Execution.AICC != nil
+}
+
+func clearAICCTaskPause(task *model.Task) {
+	if strings.HasPrefix(task.FailReason, aiccTaskPausePrefix) {
+		task.FailReason = ""
+	}
+}
+
+func pauseTaskPolling(ctx context.Context, task *model.Task, reason string) error {
+	if task == nil || !isNonTerminalPollStatus(task.Status) {
+		return nil
+	}
+	now := time.Now().Unix()
+	// Never write a stale quota/private_data/status during a configuration pause.
+	result := model.DB.WithContext(ctx).Model(&model.Task{}).
+		Where("id = ? AND status = ? AND fail_reason = ?", task.ID, task.Status, task.FailReason).
+		Updates(map[string]any{"fail_reason": reason, "updated_at": now})
+	if result.Error != nil {
+		return fmt.Errorf("pause task %s: %w", task.TaskID, result.Error)
+	}
+	if result.RowsAffected > 0 {
+		task.FailReason = reason
+		task.UpdatedAt = now
+	}
+	logger.LogWarn(ctx, fmt.Sprintf("task polling paused task=%s reason=%s", task.TaskID, reason))
+	return nil
+}
+
+func pauseAICCTask(ctx context.Context, task *model.Task, reason string) error {
+	return pauseTaskPolling(ctx, task, aiccTaskPausePrefix+reason)
+}
+
+func pauseTasksForUnavailableChannel(ctx context.Context, channelID int, ids []string, tasks map[string]*model.Task, readErr error) error {
+	resultErr := fmt.Errorf("read polling channel %d: %w", channelID, readErr)
+	for _, id := range ids {
+		task := tasks[id]
+		if task == nil || task.ChannelId != channelID {
+			continue
+		}
+		// Keep an existing diagnostic when the channel subsequently disappears.
+		if task.FailReason != "" {
+			continue
+		}
+		reason := fmt.Sprintf("任务轮询已暂停：无法读取渠道 #%d", channelID)
+		if hasAICCTaskSnapshot(task) {
+			reason = aiccTaskPausePrefix + "无法读取创建时渠道"
+		}
+		resultErr = errors.Join(resultErr, pauseTaskPolling(ctx, task, reason))
+	}
+	return resultErr
+}
+
 func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *model.Channel, taskId string, taskM map[string]*model.Task) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
@@ -493,10 +581,25 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 		logger.LogError(ctx, fmt.Sprintf("Task %s not found in taskM", taskId))
 		return fmt.Errorf("task %s not found", taskId)
 	}
+	if aiccTaskChannel(ch) && !hasAICCTaskSnapshot(task) {
+		return pauseAICCTask(ctx, task, "缺少创建时账号来源快照")
+	}
+	if hasAICCTaskSnapshot(task) {
+		current, err := model.GetChannelById(task.ChannelId, true)
+		if err != nil {
+			return pauseTasksForUnavailableChannel(ctx, task.ChannelId, []string{taskId}, taskM, err)
+		}
+		if err := ValidateAICCTaskSource(task, current); err != nil {
+			return pauseAICCTask(ctx, task, err.Error())
+		}
+		ch = current
+		baseURL = task.PrivateData.Execution.AICC.BaseURL
+		proxy = ch.GetSetting().Proxy
+	}
 	key := ch.Key
 
 	privateData := task.PrivateData
-	if privateData.Key != "" {
+	if !hasAICCTaskSnapshot(task) && privateData.Key != "" {
 		key = privateData.Key
 	}
 	snap := task.Snapshot()
@@ -548,6 +651,7 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 		return recordPollFailure(ctx, adaptor, task, snap.Status, pollClassUnrecognized, resp.StatusCode, unrecognizedPollDetail(taskResult.Reason, responseBody))
 	}
 
+	clearAICCTaskPause(task)
 	task.Data = redactVideoResponseBody(responseBody)
 	if len(taskResult.PluginState) > 0 {
 		task.PrivateData.PluginState = taskResult.PluginState

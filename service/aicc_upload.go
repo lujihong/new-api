@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 	"golang.org/x/image/webp"
 	"golang.org/x/sys/unix"
@@ -65,6 +66,10 @@ type aiccUploadMeta struct {
 	Expires int64  `json:"expires"`
 	Bytes   int64  `json:"bytes"`
 	Hash    string `json:"hash"`
+	// Omitted on v1 records so their existing HMAC remains valid.
+	Version       int    `json:"version,omitempty"`
+	ChannelID     int    `json:"channel,omitempty"`
+	AICCAccountID string `json:"account,omitempty"`
 }
 
 // AICCUploadStore is independently constructible without production environment.
@@ -178,6 +183,9 @@ func (s *AICCUploadStore) read(root *os.Root, id string, hash bool) (aiccUploadM
 	data, err := io.ReadAll(io.LimitReader(meta, 4097))
 	meta.Close()
 	if err != nil || len(data) > 4096 || json.Unmarshal(data, &m) != nil || m.ID != id || m.Owner <= 0 || m.Group == "" || len(m.Group) > 191 || m.Bytes <= 0 || m.Bytes > aiccUploadLimit(m.Type) || !aiccUploadID(m.Hash) || m.Expires-m.Created != int64(aiccUploadLifetime/time.Second) || m.Created > s.now().Unix() || m.Expires <= s.now().Unix() {
+		return m, nil, ErrAICCUploadNotFound
+	}
+	if (m.Version != 0 && m.Version != 1 && m.Version != 2) || (m.Version < 2 && (m.ChannelID != 0 || m.AICCAccountID != "")) || (m.Version == 2 && !(model.AICCBinding{ChannelID: m.ChannelID, AICCAccountID: m.AICCAccountID}).Valid()) {
 		return m, nil, ErrAICCUploadNotFound
 	}
 	if !aiccUploadMIMEAllowed(m.Type, m.MIME) {
@@ -318,8 +326,11 @@ func (s *AICCUploadStore) contentURL(m aiccUploadMeta) string {
 	u.RawQuery = q.Encode()
 	return u.String()
 }
-func (s *AICCUploadStore) Save(ctx context.Context, owner int, group, kind, declaredMIME string, src io.Reader) (AICCUploadResult, error) {
+func (s *AICCUploadStore) Save(ctx context.Context, owner int, group, kind, declaredMIME string, src io.Reader, binding ...model.AICCBinding) (AICCUploadResult, error) {
 	var result AICCUploadResult
+	if len(binding) > 1 || (len(binding) == 1 && !binding[0].Valid()) {
+		return result, ErrAICCUploadInvalid
+	}
 	if owner <= 0 || group == "" || len(group) > 191 || strings.ContainsAny(group, "\x00/\\?#") || aiccUploadLimit(kind) == 0 || src == nil {
 		return result, ErrAICCUploadInvalid
 	}
@@ -389,6 +400,9 @@ func (s *AICCUploadStore) Save(ctx context.Context, owner int, group, kind, decl
 		}
 		now := s.now().Unix()
 		m := aiccUploadMeta{ID: id, Owner: owner, Group: group, Type: kind, MIME: mt, Created: now, Expires: now + int64(aiccUploadLifetime/time.Second), Bytes: n, Hash: hex.EncodeToString(h.Sum(nil))}
+		if len(binding) == 1 {
+			m.Version, m.ChannelID, m.AICCAccountID = 2, binding[0].ChannelID, binding[0].AICCAccountID
+		}
 		if err = f.Sync(); err != nil {
 			return err
 		}
@@ -483,7 +497,7 @@ func (s *AICCUploadStore) Open(id, expires, access string) (*os.File, string, er
 // ValidateAICCUploadURL leaves external URLs to the existing upstream policy.
 // Reserved upload paths are recognized before loading configuration, so missing
 // secrets/configuration fail closed only for internal upload capabilities.
-func ValidateAICCUploadURL(raw string, userID int, groupID, assetType string) error {
+func ValidateAICCUploadURL(raw string, userID int, groupID, assetType string, binding ...model.AICCBinding) error {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return ErrAICCUploadInvalid
@@ -495,7 +509,7 @@ func ValidateAICCUploadURL(raw string, userID int, groupID, assetType string) er
 	if err != nil {
 		return ErrAICCUploadNotFound
 	}
-	_, err = s.ValidateURL(raw, userID, groupID, assetType)
+	_, err = s.ValidateURL(raw, userID, groupID, assetType, binding...)
 	return err
 }
 func aiccUploadReservedPath(p string) bool {
@@ -518,7 +532,7 @@ func aiccUploadReservedPath(p string) bool {
 // ValidateURL returns (false,nil) for external URLs, (true,error) for rejected
 // internal URLs, and (true,nil) for an owned, unexpired capability. Call BEFORE
 // forwarding an asset URL upstream; this helper itself performs no HTTP fetch.
-func (s *AICCUploadStore) ValidateURL(raw string, owner int, group, kind string) (bool, error) {
+func (s *AICCUploadStore) ValidateURL(raw string, owner int, group, kind string, binding ...model.AICCBinding) (bool, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return false, ErrAICCUploadInvalid
@@ -544,6 +558,9 @@ func (s *AICCUploadStore) ValidateURL(raw string, owner int, group, kind string)
 			return ErrAICCUploadNotFound
 		}
 		defer f.Close()
+		if len(binding) > 1 || (len(binding) == 1 && (!binding[0].Valid() || m.Version != 2 || m.ChannelID != binding[0].ChannelID || m.AICCAccountID != binding[0].AICCAccountID)) {
+			return ErrAICCUploadNotFound
+		}
 		if m.Owner != owner || m.Group != group || m.Type != kind || q.Get("expires") != strconv.FormatInt(m.Expires, 10) || !hmac.Equal([]byte(q.Get("access")), []byte(s.access(m))) {
 			return ErrAICCUploadNotFound
 		}

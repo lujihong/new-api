@@ -15,12 +15,18 @@ import { Textarea } from '@/components/ui/textarea'
 import { createAssetGroup } from '../api'
 
 interface CreateAssetGroupDialogProps {
+  channelId: number
   open: boolean
   onOpenChange: (open: boolean) => void
   onSuccess?: () => void
 }
 
-export function CreateAssetGroupDialog({
+export function CreateAssetGroupDialog(props: CreateAssetGroupDialogProps) {
+  return <CreateAssetGroupDialogContent key={`${props.channelId}:${props.open}`} {...props} />
+}
+
+function CreateAssetGroupDialogContent({
+  channelId,
   open,
   onOpenChange,
   onSuccess,
@@ -29,26 +35,30 @@ export function CreateAssetGroupDialog({
   const [groupName, setGroupName] = useState('')
   const [description, setDescription] = useState('')
   const generation = useRef(0)
+  const request = useRef<AbortController | null>(null)
   useEffect(() => {
     generation.current++
-    setLoading(false)
-    return () => { generation.current++ }
-  }, [open])
+    const lifetime = generation
+    return () => { lifetime.current++; request.current?.abort(); request.current = null }
+  }, [open, channelId])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (!open || request.current) return
     if (!groupName.trim()) {
       toast.error('请输入素材组名称')
       return
     }
 
     const current = generation.current
+    const controller = new AbortController()
+    request.current = controller
     try {
       setLoading(true)
       await createAssetGroup({
         groupName: groupName.trim(),
         description: description.trim(),
-      })
+      }, channelId, controller.signal)
       if (current !== generation.current) return
       toast.success('素材组创建成功')
       setGroupName('')
@@ -58,7 +68,7 @@ export function CreateAssetGroupDialog({
     } catch (error) {
       if (current === generation.current) toast.error(`创建素材组失败：${error instanceof Error ? error.message : '网络异常'}`)
     } finally {
-      if (current === generation.current) setLoading(false)
+      if (current === generation.current) { request.current = null; setLoading(false) }
     }
   }
 

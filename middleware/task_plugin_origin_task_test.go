@@ -29,14 +29,20 @@ func setupOriginTaskDB(t *testing.T) {
 	t.Helper()
 	previousDB := model.DB
 	previousType := common.MainDatabaseType()
+	previousLogDB, previousLogType, previousMaster := model.LOG_DB, common.LogDatabaseType(), common.IsMasterNode
 	database, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(&model.Task{}, &model.Channel{}))
+	require.NoError(t, database.AutoMigrate(&model.Task{}, &model.Channel{}, &model.Ability{}))
 	model.DB = database
 	common.SetMainDatabaseType(common.DatabaseTypeSQLite)
+	common.IsMasterNode = false
+	t.Setenv("LOG_SQL_DSN", "")
+	require.NoError(t, model.InitLogDB())
 	t.Cleanup(func() {
-		model.DB = previousDB
-		common.SetMainDatabaseType(previousType)
+		model.DB, model.LOG_DB, common.IsMasterNode = previousDB, previousLogDB, previousMaster
+		common.SetDatabaseTypes(previousType, previousLogType)
+		sqlDB, _ := database.DB()
+		_ = sqlDB.Close()
 	})
 }
 
@@ -49,6 +55,7 @@ func insertOriginTaskChannel(t *testing.T, status int) *model.Channel {
 		Type:   constant.ChannelTypeDoubaoVideo,
 	}
 	require.NoError(t, model.DB.Create(channel).Error)
+	require.NoError(t, model.DB.Create(&model.Ability{Group: "default", Model: "resolved-model", ChannelId: channel.Id, Enabled: status == common.ChannelStatusEnabled}).Error)
 	return channel
 }
 
@@ -389,6 +396,7 @@ func TestDistributeHonorsOriginTaskChannelPin(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodPost, "/vendor/jobs", strings.NewReader(`{}`))
 	c.Request.Header.Set("Content-Type", "application/json")
 	c.Set("resolved_task_model", "resolved-model")
+	common.SetContextKey(c, constant.ContextKeyUsingGroup, "default")
 	service.GetChannelConstraints(c).AddPin(dto.ChannelPin{
 		ChannelId: channel.Id,
 		Source:    dto.PinSourceOriginTask,
@@ -422,6 +430,7 @@ func TestDistributeTokenPinBeatsOriginPin(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodPost, "/vendor/jobs", strings.NewReader(`{}`))
 	c.Request.Header.Set("Content-Type", "application/json")
 	c.Set("resolved_task_model", "resolved-model")
+	common.SetContextKey(c, constant.ContextKeyUsingGroup, "default")
 	constraints := service.GetChannelConstraints(c)
 	constraints.AddPin(dto.ChannelPin{
 		ChannelId: tokenChannel.Id,
@@ -459,6 +468,7 @@ func TestDistributePinViolatingIdentityFilterErrors(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodPost, "/vendor/jobs", strings.NewReader(`{}`))
 	c.Request.Header.Set("Content-Type", "application/json")
 	c.Set("resolved_task_model", "resolved-model")
+	common.SetContextKey(c, constant.ContextKeyUsingGroup, "default")
 	c.Set("expected_task_plugin_key", "alpha")
 	service.GetChannelConstraints(c).AddPin(dto.ChannelPin{
 		ChannelId: channel.Id,

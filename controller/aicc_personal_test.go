@@ -23,7 +23,7 @@ func TestAICCManagementScopeRequiresDashboardAdminAndDoesNotClaimAssets(t *testi
 		router.Use(func(c *gin.Context) { c.Set("id", 999); c.Set("role", tc.role); c.Set("token_id", tc.token) })
 		router.GET("/api/aicc/admin/assets", AICCManagementScope, QueryAICCAssets)
 		recorder := httptest.NewRecorder()
-		router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/aicc/admin/assets", nil))
+		router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/aicc/admin/assets?channel_id=1", nil))
 		require.Equal(t, tc.want, recorder.Code)
 		if tc.want == 200 {
 			require.Contains(t, recorder.Body.String(), "asset-unclaimed")
@@ -36,9 +36,9 @@ func TestAICCManagementScopeRequiresDashboardAdminAndDoesNotClaimAssets(t *testi
 
 func TestAICCAdminPersonalScopeCannotReadForeignResources(t *testing.T) {
 	setupAICCTestDB(t)
-	require.NoError(t, model.RecordAICCAssetGroupOwnership(202, "foreign-group", "AIGC"))
-	require.NoError(t, model.RecordAICCAssetOwnership(202, "asset-foreign", "foreign-group"))
-	require.NoError(t, model.RecordAICCAuthSession(202, "foreign-session", 1800))
+	require.NoError(t, model.RecordBoundAICCAssetGroupOwnership(202, "foreign-group", "AIGC", aiccTestBinding(t)))
+	require.NoError(t, model.RecordBoundAICCAssetOwnership(202, "asset-foreign", "foreign-group", aiccTestBinding(t)))
+	require.NoError(t, model.RecordBoundAICCAuthSession(202, "foreign-session", 1800, aiccTestBinding(t)))
 	calls := 0
 	withAICCMock(t, func(w http.ResponseWriter, r *http.Request) {
 		calls++
@@ -73,9 +73,9 @@ func TestAICCAdminPersonalScopeCannotReadForeignResources(t *testing.T) {
 
 func TestAICCAdminPersonalAuthenticationRecordsOwnership(t *testing.T) {
 	setupAICCTestDB(t)
-	require.NoError(t, model.RecordAICCAuthSession(999, "admin-session", 1800))
+	require.NoError(t, model.RecordBoundAICCAuthSession(999, "admin-session", 1800, aiccTestBinding(t)))
 	withAICCMock(t, func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"state":"OK","body":{"groupId":"group-live-admin","assetList":[{"assetId":"asset-live-admin"}]}}`))
+		_, _ = w.Write([]byte(`{"state":"OK","body":{"status":"SUCCESS","groupId":"group-live-admin","assetList":[{"assetId":"asset-live-admin"}]}}`))
 	})
 	ctx, recorder := newAICCContext(http.MethodPost, "/api/aicc/auth/group", `{"bytedToken":"admin-session"}`, 999, common.RoleRootUser)
 	QueryAICCGroupByBytedToken(ctx)

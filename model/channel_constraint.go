@@ -10,6 +10,7 @@ import (
 var filterEvalOrder = []dto.ChannelFilterKind{
 	dto.FilterRequestPath,
 	dto.FilterTaskPluginIdentity,
+	dto.FilterAICCAssetAllowedChannels,
 }
 
 // ChannelSatisfiesFilters reports whether ch passes every filter.
@@ -88,6 +89,8 @@ func candidatePassesKindFilters(ch *Channel, exists bool, modelName string, kind
 
 func channelMatchesFilter(ch *Channel, modelName string, filter dto.ChannelFilter) bool {
 	switch filter.Kind {
+	case dto.FilterAICCAssetAllowedChannels:
+		return slices.Contains(filter.AllowedChannelIDs, ch.Id)
 	case dto.FilterRequestPath:
 		if filter.RequestPath == "" {
 			return true
@@ -97,12 +100,12 @@ func channelMatchesFilter(ch *Channel, modelName string, filter dto.ChannelFilte
 		}
 		config := ch.GetOtherSettings().AdvancedCustom
 		return config != nil && config.SupportsPathForModel(filter.RequestPath, modelName)
-		case dto.FilterTaskPluginIdentity:
-			if ch.Type == constant.ChannelTypeTaskPlugin {
-				key := ch.GetSetting().TaskPluginKey
-				return filter.TaskPluginKey != "" && (key == filter.TaskPluginKey || slices.Contains(filter.TaskPluginKeys, key))
-			}
-			return filter.TaskPluginKey == "" || slices.Contains(filter.TaskPluginChannelTypes, ch.Type)
+	case dto.FilterTaskPluginIdentity:
+		if ch.Type == constant.ChannelTypeTaskPlugin {
+			key := ch.GetSetting().TaskPluginKey
+			return filter.TaskPluginKey != "" && (key == filter.TaskPluginKey || slices.Contains(filter.TaskPluginKeys, key))
+		}
+		return filter.TaskPluginKey == "" || slices.Contains(filter.TaskPluginChannelTypes, ch.Type)
 	default:
 		return true
 	}

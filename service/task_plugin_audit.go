@@ -16,6 +16,11 @@ func TaskExecutionSnapshotFromContext(ctx *gin.Context) *model.TaskExecutionSnap
 	snapshot := &model.TaskExecutionSnapshot{
 		RequestID: ctx.GetString(common.RequestIdKey),
 	}
+	if value, ok := ctx.Get("aicc_dispatch_snapshot"); ok {
+		if binding, valid := value.(model.AICCDispatchSnapshot); valid {
+			snapshot.AICC = &binding
+		}
+	}
 	if ctx.Request != nil && ctx.Request.URL != nil {
 		snapshot.RequestPath = ctx.Request.URL.Path
 	}
@@ -43,7 +48,7 @@ func TaskExecutionSnapshotFromContext(ctx *gin.Context) *model.TaskExecutionSnap
 		}
 	}
 
-	if snapshot.RequestID == "" && snapshot.RequestPath == "" && snapshot.TaskPlugin == nil {
+	if snapshot.RequestID == "" && snapshot.RequestPath == "" && snapshot.TaskPlugin == nil && snapshot.AICC == nil {
 		return nil
 	}
 	return snapshot

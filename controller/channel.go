@@ -67,6 +67,21 @@ func parseStatusFilter(statusParam string) int {
 }
 
 func clearChannelInfo(channel *model.Channel) {
+	if channel.OtherInfo != "" {
+		var info map[string]any
+		if err := common.Unmarshal([]byte(channel.OtherInfo), &info); err != nil {
+			channel.OtherInfo = ""
+		} else {
+			delete(info, "access_key_id")
+			delete(info, "access_key_secret")
+			wire, err := common.Marshal(info)
+			if err != nil {
+				channel.OtherInfo = ""
+			} else {
+				channel.OtherInfo = string(wire)
+			}
+		}
+	}
 	if channel.ChannelInfo.IsMultiKey {
 		channel.ChannelInfo.MultiKeyDisabledReason = nil
 		channel.ChannelInfo.MultiKeyDisabledTime = nil
@@ -1008,6 +1023,26 @@ func UpdateChannel(c *gin.Context) {
 			"message": err.Error(),
 		})
 		return
+	}
+	// Read responses omit AICC credentials. Preserve omitted fields when a user
+	// edits other channel settings; an explicit empty value still clears a key.
+	if _, provided := requestData["other_info"]; provided && channel.OtherInfo != "" {
+		var updated, original map[string]any
+		if common.Unmarshal([]byte(channel.OtherInfo), &updated) == nil && updated != nil && common.Unmarshal([]byte(originChannel.OtherInfo), &original) == nil {
+			for _, field := range []string{"access_key_id", "access_key_secret"} {
+				if _, present := updated[field]; !present {
+					if value, exists := original[field]; exists {
+						updated[field] = value
+					}
+				}
+			}
+			wire, err := common.Marshal(updated)
+			if err != nil {
+				common.ApiError(c, err)
+				return
+			}
+			channel.OtherInfo = string(wire)
+		}
 	}
 	originProxy := originChannel.GetSetting().Proxy
 	proxyChanged := false

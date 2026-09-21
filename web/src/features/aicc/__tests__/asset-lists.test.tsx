@@ -11,7 +11,7 @@ import { PAGE_SIZE } from '../use-paged-list'
 vi.mock('@/components/layout', async () => import('@/components/layout/components/section-page-layout'))
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }))
 vi.mock('../api', () => ({
-  listAssetGroups: vi.fn(), listAssets: vi.fn(), createH5Session: vi.fn(),
+  listChannels: vi.fn(), listAssetGroups: vi.fn(), listAssets: vi.fn(), createH5Session: vi.fn(),
   queryGroupByBytedToken: vi.fn(), createAssetGroup: vi.fn(), createAsset: vi.fn(),
   deleteAssetGroup: vi.fn(), deleteAsset: vi.fn(),
 }))
@@ -28,6 +28,7 @@ function deferred<T>() {
 }
 beforeEach(() => {
   vi.resetAllMocks()
+  vi.mocked(api.listChannels).mockResolvedValue([{ id: 7, name: '专线一', region: '北京', models: [] }])
   vi.mocked(api.listAssetGroups).mockResolvedValue(page([group('1')]))
   vi.mocked(api.listAssets).mockResolvedValue(page([asset('1')]))
 })
@@ -71,8 +72,9 @@ it('aborts old group requests on tab change and ignores their late results', asy
   const old = deferred<api.PageResult<AssetGroup>>()
   vi.mocked(api.listAssetGroups).mockImplementation((params) => params.groupType === 'LivenessFace' ? old.promise : Promise.resolve(page([group('new')], 1, 1)))
   render(<AiccAssets />)
+  await waitFor(() => expect(api.listAssetGroups).toHaveBeenCalled())
   const signal = vi.mocked(api.listAssetGroups).mock.calls[0][1]
-  await user.click(screen.getByRole('tab', { name: '虚拟人像素材库 (AIGC)' }))
+  await user.click(await screen.findByRole('tab', { name: '虚拟人像素材库 (AIGC)' }))
   await screen.findByRole('button', { name: /组new/ })
   expect(signal?.aborted).toBe(true)
   await act(async () => old.resolve(page([group('old')])))
@@ -119,7 +121,7 @@ it('distinguishes loading, errors, retry and empty results', async () => {
   const pending = deferred<api.PageResult<AssetGroup>>()
   vi.mocked(api.listAssetGroups).mockReturnValueOnce(pending.promise).mockResolvedValue(page([]))
   render(<AiccAssets />)
-  expect(screen.getByText('正在加载素材组…')).toBeVisible()
+  expect(await screen.findByText('正在加载素材组…')).toBeVisible()
   expect(screen.queryByText('暂无素材组')).not.toBeInTheDocument()
   await act(async () => pending.reject(new Error('权限不足')))
   expect(screen.getByRole('alert')).toHaveTextContent('权限不足')

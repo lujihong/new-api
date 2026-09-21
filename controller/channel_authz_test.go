@@ -164,6 +164,23 @@ func TestChannelStatusValidation(t *testing.T) {
 // channelOperationalFields. A newly added field that is left unclassified will
 // fail this test, forcing a conscious permission decision instead of silently
 // defaulting either way.
+func TestAICCChannelReadRedactsCredentials(t *testing.T) {
+	db := setupAICCTestDB(t)
+	info := `{"access_key_id":"synthetic-ak-secret","access_key_secret":"synthetic-sk-secret","pool_id":"public-pool"}`
+	require.NoError(t, db.Model(&model.Channel{}).Where("id = ?", 1).Updates(map[string]any{"key": "synthetic-video-secret", "other_info": info}).Error)
+	c, recorder := newAICCContext(http.MethodGet, "/api/channel/1", "", 1, common.RoleRootUser)
+	c.Params = gin.Params{{Key: "id", Value: "1"}}
+	GetChannel(c)
+	require.Equal(t, http.StatusOK, recorder.Code)
+	assert.NotContains(t, recorder.Body.String(), "synthetic-ak-secret")
+	assert.NotContains(t, recorder.Body.String(), "synthetic-sk-secret")
+	assert.NotContains(t, recorder.Body.String(), "synthetic-video-secret")
+	assert.Contains(t, recorder.Body.String(), "public-pool")
+	stored, err := model.GetChannelById(1, true)
+	require.NoError(t, err)
+	assert.Equal(t, info, stored.OtherInfo)
+}
+
 func TestChannelFieldsAreClassified(t *testing.T) {
 	classified := func(name string) bool {
 		if _, ok := channelSensitiveFields[name]; ok {

@@ -33,12 +33,22 @@ func RecoverAICCGroup(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "恢复参数无效"})
 		return
 	}
+	if _, present, err := aiccChannelIDFromRequest(c); err != nil || !present {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "恢复必须明确指定有效的 channel_id"})
+		return
+	}
+	cfg, ok := aiccRequestConfig(c, nil)
+	if !ok {
+		return
+	}
+	binding := aiccBinding(cfg)
 	target, err := model.GetUserById(input.UserID, false)
 	if err != nil || target == nil || target.Status != common.UserStatusEnabled {
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "目标用户不存在或已停用"})
 		return
 	}
-	remote, err := service.GetAICCAssetGroup(c.Request.Context(), input.GroupID)
+	ctx := service.WithAICCConfig(c.Request.Context(), cfg)
+	remote, err := service.GetAICCAssetGroup(ctx, input.GroupID, cfg.ChannelID)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"success": false, "message": "无法核实移动云素材组，未写入归属"})
 		return
@@ -49,7 +59,7 @@ func RecoverAICCGroup(c *gin.Context) {
 		c.JSON(http.StatusBadGateway, gin.H{"success": false, "message": "移动云未返回有效素材组身份，未写入归属"})
 		return
 	}
-	err = model.RecoverAICCGroup(c.GetInt("id"), input.UserID, input.GroupID, groupType, input.Evidence)
+	err = model.RecoverBoundAICCGroup(c.GetInt("id"), input.UserID, input.GroupID, groupType, input.Evidence, binding)
 	if errors.Is(err, model.ErrAICCRecoveryConflict) {
 		c.JSON(http.StatusConflict, gin.H{"success": false, "message": err.Error()})
 		return

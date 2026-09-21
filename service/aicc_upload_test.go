@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/stretchr/testify/require"
 )
@@ -99,6 +100,60 @@ func TestAICCUploadPNGCapabilityOwnership(t *testing.T) {
 	require.Nil(t, f)
 	require.ErrorIs(t, e, ErrAICCUploadNotFound)
 }
+func TestAICCUploadBoundCapability(t *testing.T) {
+	s := aiccUploadTestStore(t)
+	binding := model.AICCBinding{ChannelID: 7, AICCAccountID: strings.Repeat("a", 64)}
+	r, err := s.Save(context.Background(), 101, "group", "Image", "image/png", bytes.NewReader(aiccUploadTestPNG(t)), binding)
+	require.NoError(t, err)
+	_, err = s.ValidateURL(r.URL, 101, "group", "Image", binding)
+	require.NoError(t, err)
+	for _, tc := range []struct {
+		owner       int
+		group, kind string
+		binding     model.AICCBinding
+	}{
+		{202, "group", "Image", binding},
+		{101, "other", "Image", binding},
+		{101, "group", "Video", binding},
+		{101, "group", "Image", model.AICCBinding{ChannelID: 8, AICCAccountID: binding.AICCAccountID}},
+		{101, "group", "Image", model.AICCBinding{ChannelID: 7, AICCAccountID: strings.Repeat("b", 64)}},
+		{101, "group", "Image", model.AICCBinding{}},
+	} {
+		_, err := s.ValidateURL(r.URL, tc.owner, tc.group, tc.kind, tc.binding)
+		require.ErrorIs(t, err, ErrAICCUploadNotFound)
+	}
+	legacy := aiccUploadTestSave(t, s)
+	_, err = s.ValidateURL(legacy.URL, 101, "group", "Image", binding)
+	require.ErrorIs(t, err, ErrAICCUploadNotFound)
+	f, _, err := aiccUploadTestOpen(s, legacy)
+	require.NoError(t, err)
+	f.Close()
+	// Binding fields and version are authenticated, not merely trusted metadata.
+	metaPath := filepath.Join(s.dir, r.ID+".json")
+	original, err := os.ReadFile(metaPath)
+	require.NoError(t, err)
+	for _, field := range []string{"account", "channel", "version"} {
+		var meta map[string]any
+		require.NoError(t, json.Unmarshal(original, &meta))
+		switch field {
+		case "account":
+			meta[field] = strings.Repeat("b", 64)
+		case "channel":
+			meta[field] = 8
+		case "version":
+			meta[field] = 1
+		}
+		data, err := json.Marshal(meta)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(metaPath, data, 0600))
+		f, _, err := aiccUploadTestOpen(s, r)
+		require.Nil(t, f)
+		require.ErrorIs(t, err, ErrAICCUploadNotFound)
+	}
+	_, err = s.Save(context.Background(), 101, "group", "Image", "image/png", bytes.NewReader(aiccUploadTestPNG(t)), model.AICCBinding{})
+	require.ErrorIs(t, err, ErrAICCUploadInvalid)
+}
+
 func TestAICCUploadURLHelperEncodings(t *testing.T) {
 	s := aiccUploadTestStore(t)
 	r := aiccUploadTestSave(t, s)

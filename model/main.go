@@ -374,6 +374,7 @@ func migrateDB() error {
 		&AICCAssetOwnership{},
 		&AICCAuthSession{},
 		&AICCRecoveryAudit{},
+		&AICCAccountAttestation{},
 		&PurchasePriceVersion{},
 		&UpstreamAttempt{},
 		&BillingOperation{},

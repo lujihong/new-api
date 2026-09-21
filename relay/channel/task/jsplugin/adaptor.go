@@ -98,107 +98,21 @@ func validateAICCAssetReferences(userID int, request any) error {
 }
 
 func validateAICCAssetReferencesForChannel(userID int, request any, channelID *int) error {
-	// Inspect decoded trees directly. Serializing unrelated plugin billing facts
-	// here misclassifies non-finite usage values as asset authorization failures.
-	// Typed legacy values are normalized locally by the visitor below.
-	assetIDs := make([]string, 0)
-	depth, visited := 0, 0
-	var visit func(any, bool) error
-	visit = func(value any, media bool) error {
-		depth++
-		visited++
-		defer func() { depth-- }()
-		if depth > 128 || visited > 100000 {
-			return fmt.Errorf("task reference structure exceeds validation limits")
-		}
-		switch typed := value.(type) {
-		case string:
-			text := strings.TrimSpace(typed)
-			if media && (strings.HasPrefix(text, "asset://") || strings.HasPrefix(text, "asset-")) {
-				id := strings.TrimPrefix(text, "asset://")
-				if !strings.HasPrefix(id, "asset-") || strings.ContainsAny(id, "/?#%\\\" \t\r\n") {
-					return fmt.Errorf("invalid AICC asset reference")
-				}
-				assetIDs = append(assetIDs, id)
-			}
-		case nil, bool, float32, float64, int, int32, int64, uint, uint32, uint64:
-			// Numeric validity belongs to the host billing validator.
-		case []string:
-			for _, item := range typed {
-				if err := visit(item, media); err != nil {
-					return err
-				}
-			}
-		case []any:
-			for _, item := range typed {
-				if err := visit(item, media); err != nil {
-					return err
-				}
-			}
-		case map[string]any:
-			for key, item := range typed {
-				switch key {
-				case "prompt", "text", "description", "negative_prompt":
-					continue
-				case "metadata":
-					// Normalize typed metadata before recognizing a JSON-encoded string.
-					switch item.(type) {
-					case string, map[string]any, []any, nil:
-					default:
-						wire, err := common.Marshal(item)
-						if err != nil {
-							return err
-						}
-						var normalizedMetadata any
-						if err := common.Unmarshal(wire, &normalizedMetadata); err != nil {
-							return err
-						}
-						item = normalizedMetadata
-					}
-					if text, ok := item.(string); ok {
-						var decoded any
-						if err := common.Unmarshal([]byte(text), &decoded); err != nil {
-							return fmt.Errorf("invalid task metadata")
-						}
-						item = decoded
-					}
-				case "image", "images", "input_reference", "input_reference[]", "asset_id", "liveness_asset_id", "image_url", "video_url", "audio_url", "first_frame_url", "last_frame_url", "video_reference", "video_reference[]", "audio_reference", "audio_reference[]":
-					if err := visit(item, true); err != nil {
-						return err
-					}
-					continue
-				}
-				if err := visit(item, media); err != nil {
-					return err
-				}
-			}
-		default:
-			wire, err := common.Marshal(value)
-			if err != nil {
-				return err
-			}
-			var normalized any
-			if err := common.Unmarshal(wire, &normalized); err != nil {
-				return err
-			}
-			return visit(normalized, media)
-		}
-		return nil
-	}
-	if err := visit(request, false); err != nil {
+	assetIDs, err := service.ExtractAICCAssetIDs(request)
+	if err != nil {
 		return err
 	}
 	if err := model.ValidateUserAICCAssetIDs(userID, assetIDs); err != nil {
 		return err
 	}
-		if len(assetIDs) > 0 && channelID != nil {
-			for _, id := range assetIDs {
-				if err := service.ValidateAICCVideoAssetChannel(*channelID, id); err != nil {
-					return err
-				}
+	if len(assetIDs) > 0 && channelID != nil {
+		for _, id := range assetIDs {
+			if err := service.ValidateAICCVideoAssetChannel(*channelID, id); err != nil {
+				return err
 			}
-			return nil
 		}
+		return nil
+	}
 	return nil
 }
 
@@ -248,6 +162,14 @@ func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycom
 	}
 	if err := validateAICCAssetReferencesForChannel(info.UserId, descriptor.Body, &info.ChannelId); err != nil {
 		return service.TaskErrorWrapperLocal(err, "aicc_asset_forbidden", http.StatusForbidden)
+	}
+	for _, part := range descriptor.Parts {
+		if part.FileRef != "" {
+			continue
+		}
+		if err := validateAICCAssetReferencesForChannel(info.UserId, map[string]any{part.Name: part.Value}, &info.ChannelId); err != nil {
+			return service.TaskErrorWrapperLocal(err, "aicc_asset_forbidden", http.StatusForbidden)
+		}
 	}
 	// The descriptor may rewrite the model. Validate profiled requests against
 	// that final model before any quota calculation or upstream submission.
@@ -403,13 +325,38 @@ func (a *TaskAdaptor) BuildRequestURL(info *relaycommon.RelayInfo) (string, erro
 	return a.submit.URL, pluginruntime.ValidateRequestURL(a.submit.URL, info.ChannelBaseUrl, a.plugin.Meta.AllowedHosts)
 }
 
-func (a *TaskAdaptor) BuildRequestHeader(_ *gin.Context, req *http.Request, _ *relaycommon.RelayInfo) error {
+func (a *TaskAdaptor) BuildRequestHeader(c *gin.Context, req *http.Request, info *relaycommon.RelayInfo) error {
 	if a.submit == nil {
 		return fmt.Errorf("plugin submit request was not built")
 	}
 	for name, value := range a.submit.Headers {
 		req.Header.Set(name, value)
 	}
+	parts := make([]any, 0, len(a.submit.Parts)+1)
+	parts = append(parts, a.submit.Body)
+	for _, part := range a.submit.Parts {
+		if part.FileRef == "" {
+			parts = append(parts, map[string]any{part.Name: part.Value})
+		}
+	}
+	ids, err := service.ExtractAICCAssetIDs(parts)
+	if err != nil {
+		return err
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	if info == nil {
+		return fmt.Errorf("AICC dispatch context is missing")
+	}
+	var snapshot model.AICCDispatchSnapshot
+	if err := service.ValidateAICCDispatch(info.UserId, info.ChannelId, ids, info.ApiKey, info.ChannelBaseUrl, req, &snapshot); err != nil {
+		return err
+	}
+	if c == nil {
+		return fmt.Errorf("AICC task context is missing")
+	}
+	c.Set("aicc_dispatch_snapshot", snapshot)
 	return nil
 }
 
@@ -824,7 +771,9 @@ func (a *TaskAdaptor) doFetchDescriptor(baseURL, proxy string, value any) (*http
 		return nil, err
 	}
 	started := time.Now()
-	resp, err := client.Do(req)
+	queryClient := *client
+	queryClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := queryClient.Do(req)
 	if err != nil {
 		logger.LogDebug(
 			context.Background(),

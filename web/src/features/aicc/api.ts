@@ -10,11 +10,37 @@ export interface PageResult<T> {
 
 export type AssetScope = 'personal' | 'management'
 
+export interface AiccChannel {
+  id: number
+  name: string
+  region: string
+  models: string[] | null
+}
+
+function channelQuery(channelId: number) {
+  if (!Number.isSafeInteger(channelId) || channelId <= 0) throw new Error('请选择有效的 AICC 渠道')
+  return { channel_id: channelId }
+}
+
+export async function listChannels(signal?: AbortSignal): Promise<AiccChannel[]> {
+  const res = await api.get('/api/aicc/channels', { signal, disableDuplicate: true })
+  const data = unwrapEnvelope(res.data)
+  if (!Array.isArray(data) || !data.every((row: unknown) =>
+    isRecord(row) && typeof row.id === 'number' && Number.isSafeInteger(row.id) && row.id > 0 &&
+    typeof row.name === 'string' && row.name.trim().length > 0 && typeof row.region === 'string' &&
+    (row.models === null || (Array.isArray(row.models) && row.models.every((model: unknown) => typeof model === 'string')))
+  ) || new Set(data.map(row => row.id)).size !== data.length) {
+    throw new Error('AICC 渠道响应格式异常，请重试')
+  }
+  return data as AiccChannel[]
+}
+
 function scopePath(resource: 'asset-groups' | 'assets', scope: AssetScope = 'personal') {
   return `/api/aicc/${scope === 'management' ? 'admin/' : ''}${resource}`
 }
 
 interface PageParams {
+  channelId: number
   scope?: AssetScope
   pageNo?: number
   pageSize?: number
@@ -56,7 +82,9 @@ function parsePage<T>(value: unknown, params: PageParams, idKey: string, nameKey
   const payload = unwrapEnvelope(value)
   const body = isRecord(payload) && 'body' in payload ? payload.body : payload
   checkFailure(body)
-  const rows = Array.isArray(body) ? body : isRecord(body) ? (body.data ?? body.list) : undefined
+  let rows: unknown
+  if (Array.isArray(body)) rows = body
+  else if (isRecord(body)) rows = body.data ?? body.list
   if (!Array.isArray(rows) || !rows.every((row: unknown) =>
     isRecord(row) && typeof row[idKey] === 'string' && Boolean(row[idKey]) && (row[nameKey] == null || typeof row[nameKey] === 'string')
   )) {
@@ -67,13 +95,13 @@ function parsePage<T>(value: unknown, params: PageParams, idKey: string, nameKey
   return {
     data: rows.map(row => ({ ...row, [nameKey]: row[nameKey] || '未命名素材' })) as T[],
     total: pageNumber(metadata.total ?? parent.total, undefined, 'total', 0),
-    pageNo: pageNumber(metadata.pageNo ?? parent.pageNo, params.pageNo ?? 1, 'pageNo', 1)!,
-    pageSize: pageNumber(metadata.pageSize ?? parent.pageSize, params.pageSize ?? 20, 'pageSize', 1)!,
+    pageNo: pageNumber(metadata.pageNo ?? parent.pageNo, params.pageNo ?? 1, 'pageNo', 1) ?? 1,
+    pageSize: pageNumber(metadata.pageSize ?? parent.pageSize, params.pageSize ?? 20, 'pageSize', 1) ?? 20,
   }
 }
 
-export async function createH5Session(signal?: AbortSignal): Promise<H5SessionResponse> {
-  const res = await api.post('/api/aicc/auth/session', undefined, { signal })
+export async function createH5Session(channelId: number, signal?: AbortSignal): Promise<H5SessionResponse> {
+  const res = await api.post('/api/aicc/auth/session', undefined, { params: channelQuery(channelId), signal })
   const data = unwrapEnvelope(res.data)
   if (!isRecord(data) || typeof data.bytedToken !== 'string' || typeof data.h5Link !== 'string' ||
     !data.bytedToken || !/^https?:\/\//i.test(data.h5Link) || typeof data.expiresIn !== 'number') {
@@ -90,18 +118,18 @@ export async function queryGroupByBytedToken(token: string, signal?: AbortSignal
 }
 
 export async function listAssetGroups(params: PageParams, signal?: AbortSignal): Promise<PageResult<AssetGroup>> {
-  const { scope, ...query } = params
-  const res = await api.get(scopePath('asset-groups', scope), { params: query, signal, ...(scope ? { disableDuplicate: true } : {}) })
+  const { scope, channelId, ...query } = params
+  const res = await api.get(scopePath('asset-groups', scope), { params: { ...query, ...channelQuery(channelId) }, signal, disableDuplicate: true })
   return parsePage<AssetGroup>(res.data, params, 'groupId', 'groupName')
 }
 
-export async function createAssetGroup(data: { groupName: string; description?: string }): Promise<unknown> {
-  const res = await api.post('/api/aicc/asset-groups', data)
+export async function createAssetGroup(data: { groupName: string; description?: string }, channelId: number, signal?: AbortSignal): Promise<unknown> {
+  const res = await api.post('/api/aicc/asset-groups', data, { params: channelQuery(channelId), signal })
   return unwrapEnvelope(res.data)
 }
 
-export async function deleteAssetGroup(groupId: string, scope: AssetScope = 'personal'): Promise<unknown> {
-  const res = await api.delete(`${scopePath('asset-groups', scope)}/${encodeURIComponent(groupId)}`)
+export async function deleteAssetGroup(groupId: string, channelId: number, scope: AssetScope = 'personal', signal?: AbortSignal): Promise<unknown> {
+  const res = await api.delete(`${scopePath('asset-groups', scope)}/${encodeURIComponent(groupId)}`, { params: channelQuery(channelId), signal })
   return unwrapEnvelope(res.data)
 }
 
@@ -110,8 +138,8 @@ export async function listAssets(params: PageParams & {
   assetName?: string
   statuses?: string
 }, signal?: AbortSignal): Promise<PageResult<Asset>> {
-  const { scope, ...query } = params
-  const res = await api.get(scopePath('assets', scope), { params: query, signal, ...(scope ? { disableDuplicate: true } : {}) })
+  const { scope, channelId, ...query } = params
+  const res = await api.get(scopePath('assets', scope), { params: { ...query, ...channelQuery(channelId) }, signal, disableDuplicate: true })
   return parsePage<Asset>(res.data, params, 'assetId', 'assetName')
 }
 
@@ -120,13 +148,13 @@ export async function createAsset(data: {
   assetName: string
   assetUrl: string
   assetType: string
-}, signal?: AbortSignal): Promise<unknown> {
-  const res = await api.post('/api/aicc/assets', data, { signal, timeout: 60_000, skipErrorHandler: true, skipBusinessError: true })
+}, channelId: number, signal?: AbortSignal): Promise<unknown> {
+  const res = await api.post('/api/aicc/assets', data, { params: channelQuery(channelId), signal, timeout: 60_000, skipErrorHandler: true, skipBusinessError: true })
   return unwrapEnvelope(res.data)
 }
 
-export async function deleteAsset(assetId: string, scope: AssetScope = 'personal'): Promise<unknown> {
-  const res = await api.delete(`${scopePath('assets', scope)}/${encodeURIComponent(assetId)}`)
+export async function deleteAsset(assetId: string, channelId: number, scope: AssetScope = 'personal', signal?: AbortSignal): Promise<unknown> {
+  const res = await api.delete(`${scopePath('assets', scope)}/${encodeURIComponent(assetId)}`, { params: channelQuery(channelId), signal })
   return unwrapEnvelope(res.data)
 }
 
@@ -144,13 +172,13 @@ export function uploadExpiry(expiresAt: UploadedAsset['expiresAt']): number {
   return Date.parse(expiresAt)
 }
 
-export async function uploadAsset(file: File, groupId: string, assetType: Asset['assetType'], signal?: AbortSignal): Promise<UploadedAsset> {
+export async function uploadAsset(file: File, groupId: string, assetType: Asset['assetType'], channelId: number, signal?: AbortSignal): Promise<UploadedAsset> {
   const form = new FormData()
   form.append('file', file)
   form.append('groupId', groupId)
   form.append('assetType', assetType)
   // Browser supplies multipart Content-Type including its boundary.
-  const res = await api.post('/api/aicc/uploads', form, { signal, timeout: 120_000, skipErrorHandler: true, skipBusinessError: true })
+  const res = await api.post('/api/aicc/uploads', form, { params: channelQuery(channelId), signal, timeout: 120_000, skipErrorHandler: true, skipBusinessError: true })
   const data = unwrapEnvelope(res.data)
   if (!isRecord(data) || typeof data.id !== 'string' || !data.id || typeof data.url !== 'string' ||
     !/^https?:\/\//i.test(data.url) || data.assetType !== assetType || typeof data.mimeType !== 'string' ||

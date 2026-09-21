@@ -666,6 +666,93 @@ func TestUpdateSunoTasksStalePollsRefundExactlyOnce(t *testing.T) {
 	assert.Equal(t, int64(1), countLogs(t))
 }
 
+func TestRunTaskPollingOnceSeparatesEqualUpstreamIDsAcrossChannels(t *testing.T) {
+	truncate(t)
+	seedTaskPollingChannel(t, 901, true)
+	seedTaskPollingChannel(t, 902, true)
+	first := seedPollingTask(t, 901, "public-a", "same-upstream")
+	second := seedPollingTask(t, 902, "public-b", "same-upstream")
+	require.NoError(t, model.DB.Model(&model.Task{}).Where("id IN ?", []int64{first.ID, second.ID}).Update("submit_time", time.Now().Unix()).Error)
+	previousLimit := constant.TaskQueryLimit
+	constant.TaskQueryLimit = 100
+	t.Cleanup(func() { constant.TaskQueryLimit = previousLimit })
+	adaptor := &taskPollingFetchAdaptor{}
+	previous := GetTaskAdaptorFunc
+	GetTaskAdaptorFunc = func(constant.TaskPlatform) TaskPollingAdaptor { return adaptor }
+	t.Cleanup(func() { GetTaskAdaptorFunc = previous })
+	RunTaskPollingOnce(context.Background(), nil)
+	require.Equal(t, 2, adaptor.fetchCount())
+	for _, id := range []int64{first.ID, second.ID} {
+		var task model.Task
+		require.NoError(t, model.DB.First(&task, id).Error)
+		require.Equal(t, model.TaskStatus(model.TaskStatusInProgress), task.Status)
+	}
+	third := seedPollingTask(t, 901, "public-c", "same-upstream")
+	require.NoError(t, model.DB.Model(third).Update("submit_time", time.Now().Unix()).Error)
+	RunTaskPollingOnce(context.Background(), nil)
+	require.Equal(t, 3, adaptor.fetchCount(), "ambiguous same-channel tasks must pause, other channel must continue")
+}
+
+func TestAICCTaskPauseDoesNotFetchOrRefundAndRecoveryClearsPause(t *testing.T) {
+	truncate(t)
+	const channelID = 903
+	seedTaskPollingChannel(t, channelID, true)
+	var ch model.Channel
+	require.NoError(t, model.DB.First(&ch, channelID).Error)
+	info := ch.GetOtherInfo()
+	info["aicc_enabled"] = true
+	info["access_key_id"] = "legacy-ak"
+	ch.SetOtherInfo(info)
+	require.NoError(t, model.DB.Save(&ch).Error)
+	task := seedPollingTask(t, channelID, "aicc-missing-snapshot", "aicc-upstream")
+	task.Quota = 3000
+	require.NoError(t, model.DB.Save(task).Error)
+	adaptor := &taskPollingFetchAdaptor{}
+	require.NoError(t, updateVideoSingleTask(context.Background(), adaptor, &ch, task.GetUpstreamTaskID(), map[string]*model.Task{task.GetUpstreamTaskID(): task}))
+	var paused model.Task
+	require.NoError(t, model.DB.First(&paused, task.ID).Error)
+	assert.Equal(t, 0, adaptor.fetchCount())
+	assert.Equal(t, 0, paused.PrivateData.PollFailures)
+	assert.Equal(t, 3000, paused.Quota)
+	assert.Contains(t, paused.FailReason, aiccTaskPausePrefix)
+
+	ch.SetOtherInfo(map[string]any{})
+	require.NoError(t, model.DB.Save(&ch).Error)
+	require.NoError(t, updateVideoSingleTask(context.Background(), adaptor, &ch, task.GetUpstreamTaskID(), map[string]*model.Task{task.GetUpstreamTaskID(): &paused}))
+	var recovered model.Task
+	require.NoError(t, model.DB.First(&recovered, task.ID).Error)
+	assert.Equal(t, 1, adaptor.fetchCount())
+	assert.Empty(t, recovered.FailReason)
+	assert.Equal(t, 0, recovered.PrivateData.PollFailures)
+	assert.Equal(t, 3000, recovered.Quota)
+}
+
+func TestUpdateBatchTasksIgnoresResponsesForPausedTasks(t *testing.T) {
+	truncate(t)
+	const channelID = 904
+	seedTaskPollingChannel(t, channelID, true)
+	var ch model.Channel
+	require.NoError(t, model.DB.First(&ch, channelID).Error)
+	legacy := seedPollingTask(t, channelID, "legacy-aicc", "legacy-upstream")
+	legacy.PrivateData.Execution = &model.TaskExecutionSnapshot{AICC: &model.AICCDispatchSnapshot{ChannelID: channelID, AccountID: "old-account", BaseURL: "https://old.invalid", ConfigFingerprint: "old-fingerprint"}}
+	require.NoError(t, model.DB.Save(legacy).Error)
+	valid := seedPollingTask(t, channelID, "valid-video", "valid-upstream")
+	adaptor := &batchPollingAdaptor{results: map[string]*BatchTaskResult{
+		legacy.GetUpstreamTaskID(): {TaskInfo: relaycommon.TaskInfo{Status: model.TaskStatusFailure, Reason: "must not apply"}},
+		valid.GetUpstreamTaskID():  {TaskInfo: relaycommon.TaskInfo{Status: model.TaskStatusInProgress}},
+	}}
+	require.NoError(t, updateBatchTasks(context.Background(), adaptor, channelID, []string{legacy.GetUpstreamTaskID(), valid.GetUpstreamTaskID()}, map[string]*model.Task{
+		legacy.GetUpstreamTaskID(): legacy, valid.GetUpstreamTaskID(): valid,
+	}))
+	var gotLegacy, gotValid model.Task
+	require.NoError(t, model.DB.First(&gotLegacy, legacy.ID).Error)
+	require.NoError(t, model.DB.First(&gotValid, valid.ID).Error)
+	assert.Equal(t, model.TaskStatus(model.TaskStatusInProgress), gotLegacy.Status)
+	assert.Contains(t, gotLegacy.FailReason, aiccTaskPausePrefix)
+	assert.Equal(t, model.TaskStatus(model.TaskStatusInProgress), gotValid.Status)
+	assert.Equal(t, []string{"valid-upstream"}, adaptor.batchIDs)
+}
+
 func TestRunTaskPollingOnceDoesNotRefundHistoricalFailedTask(t *testing.T) {
 	truncate(t)
 

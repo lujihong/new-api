@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
 import { Copy, Check, RefreshCw, ExternalLink, ShieldCheck, AlertCircle } from 'lucide-react'
 import { toast } from 'sonner'
@@ -16,12 +16,18 @@ import { createH5Session, queryGroupByBytedToken } from '../api'
 import type { H5SessionResponse } from '../types'
 
 interface RealPersonAuthDialogProps {
+  channelId: number
   open: boolean
   onOpenChange: (open: boolean) => void
   onSuccess?: () => void
 }
 
-export function RealPersonAuthDialog({
+export function RealPersonAuthDialog(props: RealPersonAuthDialogProps) {
+  return <RealPersonAuthDialogContent key={`${props.channelId}:${props.open}`} {...props} />
+}
+
+function RealPersonAuthDialogContent({
+  channelId,
   open,
   onOpenChange,
   onSuccess,
@@ -32,7 +38,7 @@ export function RealPersonAuthDialog({
   const [copied, setCopied] = useState(false)
   const [authSuccess, setAuthSuccess] = useState(false)
   const [expiresAt, setExpiresAt] = useState(0)
-  const [clock, setClock] = useState(Date.now())
+  const [clock, setClock] = useState(Date.now)
   const secondsLeft = Math.max(0, Math.ceil((expiresAt - clock) / 1000))
   useEffect(() => {
     if (!open || !session) return
@@ -44,7 +50,7 @@ export function RealPersonAuthDialog({
   const generation = useRef(0)
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
-  const initSession = async () => {
+  const initSession = useCallback(async () => {
     request.current?.abort()
     clearTimeout(timer.current)
     const controller = new AbortController()
@@ -56,7 +62,7 @@ export function RealPersonAuthDialog({
     setSession(null)
     setAuthSuccess(false)
     try {
-      const data = await createH5Session(controller.signal)
+      const data = await createH5Session(channelId, controller.signal)
       if (!controller.signal.aborted && current === generation.current) {
         setSession(data)
         setClock(Date.now())
@@ -67,17 +73,19 @@ export function RealPersonAuthDialog({
     } finally {
       if (!controller.signal.aborted && current === generation.current) setLoading(false)
     }
-  }
+  }, [channelId])
 
   useEffect(() => {
-    if (open) void initSession()
-    else { setSession(null); setAuthSuccess(false) }
+    let active = true
+    const lifetime = generation
+    if (open) void Promise.resolve().then(() => { if (active) void initSession() })
     return () => {
-      generation.current++
+      active = false
+      lifetime.current++
       request.current?.abort()
       clearTimeout(timer.current)
     }
-  }, [open])
+  }, [open, initSession])
 
   const copyLink = async () => {
     if (!session?.h5Link) return
@@ -129,12 +137,13 @@ export function RealPersonAuthDialog({
           </DialogDescription>
         </DialogHeader>
 
-        {loading ? (
+        {loading && (
           <div className="flex flex-col items-center justify-center py-12 gap-3">
             <RefreshCw className="w-8 h-8 animate-spin text-muted-foreground" />
             <p className="text-sm text-muted-foreground">正在向移动云安全网关申请授权会话...</p>
           </div>
-        ) : session?.h5Link ? (
+        )}
+        {!loading && session?.h5Link && (
           <div className="flex flex-col items-center gap-4 py-2">
             {authSuccess ? (
               <div className="flex flex-col items-center justify-center py-8 text-center gap-2">
@@ -193,7 +202,8 @@ export function RealPersonAuthDialog({
               </>
             )}
           </div>
-        ) : (
+        )}
+        {!loading && !session?.h5Link && (
           <div className="py-8 text-center text-sm text-destructive">
             未能成功创建会话，请检查网络后点击重试
           </div>

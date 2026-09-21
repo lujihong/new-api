@@ -12,7 +12,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"sort"
 	"strings"
 	"time"
@@ -21,6 +20,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
+	"gorm.io/gorm"
 )
 
 const (
@@ -35,7 +35,17 @@ type AICCConfig struct {
 	PoolID          string
 	ChannelID       int
 	ChannelName     string
+	AICCAccountID   string
+	AccountVerified bool
+	ChannelPinned   bool
 }
+
+// WithAICCConfig pins the resolved credential snapshot for the entire operation.
+func WithAICCConfig(ctx context.Context, cfg AICCConfig) context.Context {
+	return context.WithValue(ctx, aiccConfigContextKey{}, cfg)
+}
+
+type aiccConfigContextKey struct{}
 
 type AICCH5SessionResponse struct {
 	BytedToken string `json:"bytedToken"`
@@ -52,66 +62,145 @@ func validateAICCResourceID(value string) (string, error) {
 }
 
 func GetAICCConfig(channelID ...int) AICCConfig {
-	cID := 0
-	if len(channelID) > 0 {
-		cID = channelID[0]
+	var cfg AICCConfig
+	if len(channelID) == 0 {
+		cfg, _ = ResolveDefaultAICCConfig()
+	} else {
+		cfg, _ = GetAICCConfigForChannel(channelID[0])
 	}
-	cfg, _ := GetAICCConfigForChannel(cID)
 	return cfg
 }
 
+func aiccConfigFromChannel(ch model.Channel) (AICCConfig, error) {
+	cfg := AICCConfig{ChannelID: ch.Id, ChannelName: ch.Name}
+	if ch.Id <= 0 || ch.Status != common.ChannelStatusEnabled || !gjson.Get(ch.OtherInfo, "aicc_enabled").Bool() {
+		return cfg, errors.New("请由管理员显式启用该渠道的 AICC 账号配置")
+	}
+	cfg.AccessKeyID = strings.TrimSpace(gjson.Get(ch.OtherInfo, "access_key_id").String())
+	cfg.AccessKeySecret = strings.TrimSpace(gjson.Get(ch.OtherInfo, "access_key_secret").String())
+	cfg.Endpoint = strings.TrimRight(strings.TrimSpace(gjson.Get(ch.OtherInfo, "endpoint").String()), "/")
+	cfg.PoolID = strings.TrimSpace(gjson.Get(ch.OtherInfo, "pool_id").String())
+	u, err := url.Parse(cfg.Endpoint)
+	if cfg.AccessKeyID == "" || cfg.AccessKeySecret == "" || cfg.PoolID == "" || err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return AICCConfig{}, errors.New("移动云 AICC 渠道配置不完整，请配置 AK、SK、endpoint 和 pool_id")
+	}
+	account := strings.TrimSpace(ch.AICCAccountID)
+	if account == "" {
+		account = strings.TrimSpace(gjson.Get(ch.OtherInfo, "aicc_account_id").String())
+	}
+	// Pin credentials and resource domain conservatively until an audited account
+	// binding exists. An administrator label alone is not upstream identity proof.
+	identity := []string{"aicc-config/v1", account, fmt.Sprint(ch.Id), cfg.AccessKeyID, cfg.AccessKeySecret, cfg.Endpoint, cfg.PoolID}
+	cfg.AccountVerified = false
+	if gjson.Get(ch.OtherInfo, "aicc_channel_pinned").Bool() {
+		fingerprint, err := AICCChannelCredentialFingerprint(ch)
+		if err != nil {
+			return AICCConfig{}, err
+		}
+		identity = append(identity, fingerprint)
+		cfg.ChannelPinned = true
+	}
+	encoded, err := common.Marshal(identity)
+	if err != nil {
+		return AICCConfig{}, err
+	}
+	digest := sha256.Sum256(encoded)
+	cfg.AICCAccountID = hex.EncodeToString(digest[:])
+	attestation, err := model.LatestAICCAccountAttestation(ch.Id)
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return AICCConfig{}, err
+	}
+	if err == nil && !attestation.Revoked {
+		fingerprint, fpErr := AICCChannelCredentialFingerprint(ch)
+		if fpErr == nil && fingerprint == attestation.ConfigFingerprint {
+			cfg.AICCAccountID = attestation.AccountID
+			cfg.AccountVerified = true
+		}
+	}
+	return cfg, nil
+}
+
+// AICCChannelCredentialFingerprint binds evidence to both credential sets and
+// the effective routing configuration. It never exposes the credential values.
+func normalizedChannelBaseURL(ch model.Channel) string {
+	base := ""
+	if ch.BaseURL != nil {
+		base = *ch.BaseURL
+	}
+	return strings.TrimRight(strings.TrimSpace(base), "/")
+}
+
+func AICCChannelCredentialFingerprint(ch model.Channel) (string, error) {
+	if ch.ChannelInfo.IsMultiKey || strings.TrimSpace(ch.Key) == "" {
+		return "", errors.New("请使用单一视频凭据完成账号核实")
+	}
+	wire, err := common.Marshal([]any{ch.Id, ch.Type, ch.Key, normalizedChannelBaseURL(ch), ch.OtherInfo, ch.Setting, ch.OtherSettings, ch.HeaderOverride, ch.ParamOverride, ch.ModelMapping, ch.AICCAccountID})
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(wire)
+	return hex.EncodeToString(digest[:]), nil
+}
+
+func AttestAICCChannelAccount(actor, channelID int, subject, evidence, expectedFingerprint string) error {
+	if _, err := GetAICCConfigForChannel(channelID); err != nil {
+		return err
+	}
+	var channel model.Channel
+	if err := model.DB.Where("id = ?", channelID).First(&channel).Error; err != nil {
+		return err
+	}
+	accountID, err := model.DeriveAICCAccountID(channel, subject)
+	if err != nil {
+		return err
+	}
+	return model.RecordAICCAccountAttestation(model.AICCAccountAttestation{
+		ActorUserID:       actor,
+		ChannelID:         channelID,
+		AccountID:         accountID,
+		UpstreamSubject:   subject,
+		Evidence:          evidence,
+		ConfigFingerprint: expectedFingerprint,
+	}, AICCChannelCredentialFingerprint)
+}
+
+// Explicit channel selection never falls back, including on database errors.
 func GetAICCConfigForChannel(channelID int) (AICCConfig, error) {
-	ak := strings.TrimSpace(os.Getenv("AICC_ACCESS_KEY_ID"))
-	sk := strings.TrimSpace(os.Getenv("AICC_ACCESS_KEY_SECRET"))
-	endpoint := strings.TrimSpace(os.Getenv("AICC_ENDPOINT"))
-	if endpoint == "" {
-		endpoint = DefaultAICCEndpoint
+	if channelID <= 0 || model.DB == nil {
+		return AICCConfig{}, errors.New("请选择有效的 AICC 渠道")
 	}
+	var ch model.Channel
+	if err := model.DB.Where("id = ?", channelID).First(&ch).Error; err != nil {
+		return AICCConfig{}, errors.New("AICC 渠道不可用，请检查渠道配置")
+	}
+	return aiccConfigFromChannel(ch)
+}
 
-	if model.DB != nil {
-		var ch model.Channel
-		var err error
-		if channelID > 0 {
-			err = model.DB.Where("id = ? AND status = 1", channelID).First(&ch).Error
-		} else {
-			err = model.DB.Where("status = 1 AND (type = 54 OR other_info LIKE '%access_key_id%' OR name LIKE '%移动%' OR name LIKE '%AICC%')").
-				Order("priority DESC, id ASC").
-				First(&ch).Error
+// ResolveDefaultAICCConfig requires one eligible channel; priorities do not establish account ownership.
+// Environment credentials are deliberately not treated as a channel.
+func ResolveDefaultAICCConfig() (AICCConfig, error) {
+	if model.DB == nil {
+		return AICCConfig{}, errors.New("AICC 渠道配置不可用")
+	}
+	var channels []model.Channel
+	if err := model.DB.Where("status = ?", common.ChannelStatusEnabled).Find(&channels).Error; err != nil {
+		return AICCConfig{}, errors.New("AICC 渠道配置读取失败")
+	}
+	var selected AICCConfig
+	for _, ch := range channels {
+		cfg, err := aiccConfigFromChannel(ch)
+		if err != nil {
+			continue
 		}
-		if err == nil && ch.OtherInfo != "" {
-			cAK := gjson.Get(ch.OtherInfo, "access_key_id").String()
-			cSK := gjson.Get(ch.OtherInfo, "access_key_secret").String()
-			cEP := gjson.Get(ch.OtherInfo, "endpoint").String()
-			cPool := gjson.Get(ch.OtherInfo, "pool_id").String()
-			if cEP == "" {
-				cEP = endpoint
-			}
-			if cPool == "" {
-				cPool = DefaultAICCPoolID
-			}
-			if cAK != "" && cSK != "" {
-				return AICCConfig{
-					AccessKeyID:     cAK,
-					AccessKeySecret: cSK,
-					Endpoint:        cEP,
-					PoolID:          cPool,
-					ChannelID:       int(ch.Id),
-					ChannelName:     ch.Name,
-				}, nil
-			}
+		if selected.ChannelID != 0 {
+			return AICCConfig{}, errors.New("存在多个 AICC 渠道，请明确选择素材所属渠道")
 		}
+		selected = cfg
 	}
-
-	if ak == "" || sk == "" {
-		return AICCConfig{AccessKeyID: ak, AccessKeySecret: sk, Endpoint: endpoint, PoolID: DefaultAICCPoolID}, errors.New("移动云 AICC 账号未配置")
+	if selected.ChannelID == 0 {
+		return AICCConfig{}, errors.New("暂无配置完整的 AICC 渠道")
 	}
-
-	return AICCConfig{
-		AccessKeyID:     ak,
-		AccessKeySecret: sk,
-		Endpoint:        endpoint,
-		PoolID:          DefaultAICCPoolID,
-	}, nil
+	return selected, nil
 }
 
 // ListAvailableAICCChannels 列出系统当前所有已启用并支持 AICC 资产的移动云专线渠道
@@ -120,26 +209,29 @@ func ListAvailableAICCChannels() ([]map[string]any, error) {
 		return []map[string]any{}, nil
 	}
 	var channels []model.Channel
-	err := model.DB.Where("status = 1 AND (type = 54 OR other_info LIKE '%access_key_id%' OR name LIKE '%移动%')").
+	err := model.DB.Where("status = ?", common.ChannelStatusEnabled).
 		Order("priority DESC, id ASC").
 		Find(&channels).Error
 	if err != nil {
 		return nil, err
 	}
 	result := make([]map[string]any, 0, len(channels))
-		for _, ch := range channels {
-			region := "官方移动专线"
-			base := ""
-			if ch.BaseURL != nil {
-				base = *ch.BaseURL
-			}
-			if strings.Contains(ch.Name, "呼和浩特") || strings.Contains(base, "huhehaote") {
-				region = "呼和浩特节点"
-			} else if strings.Contains(ch.Name, "内蒙") {
-				region = "内蒙节点"
-			} else if strings.Contains(ch.Name, "北京") {
-				region = "北京节点"
-			}
+	for _, ch := range channels {
+		if _, err := aiccConfigFromChannel(ch); err != nil {
+			continue
+		}
+		region := "官方移动专线"
+		base := ""
+		if ch.BaseURL != nil {
+			base = *ch.BaseURL
+		}
+		if strings.Contains(ch.Name, "呼和浩特") || strings.Contains(base, "huhehaote") {
+			region = "呼和浩特节点"
+		} else if strings.Contains(ch.Name, "内蒙") {
+			region = "内蒙节点"
+		} else if strings.Contains(ch.Name, "北京") {
+			region = "北京节点"
+		}
 		var modelsList []string
 		if strings.TrimSpace(ch.Models) != "" {
 			modelsList = strings.Split(ch.Models, ",")
@@ -161,37 +253,83 @@ func ValidateAICCVideoChannel(channelID int) error {
 
 // ValidateAICCVideoAssetChannel validates that the target video channel matches the asset's registered mobile channel.
 func ValidateAICCVideoAssetChannel(channelID int, assetID string) error {
-	if channelID <= 0 || model.DB == nil {
-		return errors.New("AICC asset channel is unavailable")
+	cfg, err := GetAICCConfigForChannel(channelID)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(assetID) != "" {
+		binding, err := model.GetAICCAssetBinding(assetID)
+		if err != nil {
+			return errors.New("素材来源校验失败，请从素材库重新选择或联系管理员核实归属")
+		}
+		if binding.AICCAccountID != cfg.AICCAccountID {
+			return errors.New("素材来源与视频渠道配置不匹配，请核实账号绑定")
+		}
+	}
+	if !cfg.AccountVerified && !cfg.ChannelPinned {
+		return errors.New("该渠道的视频凭据与素材账号关联尚未核实，请联系管理员完成账号绑定")
+	}
+	return nil
+}
+
+// ValidateAICCDispatch checks the actual materialized request, not cached channel
+// metadata. No credential from a different configuration may be sent after approval.
+func ValidateAICCDispatch(userID, channelID int, assetIDs []string, apiKey, baseURL string, request *http.Request, snapshot ...*model.AICCDispatchSnapshot) error {
+	if len(assetIDs) == 0 {
+		return nil
+	}
+	if err := model.ValidateUserAICCAssetIDs(userID, assetIDs); err != nil {
+		return err
 	}
 	ch, err := model.GetChannelById(channelID, true)
-	if err != nil || ch == nil || ch.Status != common.ChannelStatusEnabled {
-		return errors.New("AICC asset channel is unavailable")
+	if err != nil {
+		return err
 	}
-
-	ak := gjson.Get(ch.OtherInfo, "access_key_id").String()
-	sk := gjson.Get(ch.OtherInfo, "access_key_secret").String()
-
-	if strings.TrimSpace(assetID) != "" {
-		assetChannelID, err := model.GetAICCAssetChannelID(assetID)
-		if err == nil && assetChannelID > 0 && assetChannelID != channelID {
-			return fmt.Errorf("真人素材所属移动云渠道(ID: %d)与当前视频任务派发渠道(ID: %d)不匹配，移动云真人肖像为强租户绑定资产，无法跨渠道跨账号使用，请选用该素材对应的视频渠道", assetChannelID, channelID)
+	cfg, err := aiccConfigFromChannel(*ch)
+	if err != nil || (!cfg.AccountVerified && !cfg.ChannelPinned) {
+		return errors.New("素材账号凭据关联已失效，请重新核实")
+	}
+	if ch.BaseURL == nil || strings.TrimRight(*ch.BaseURL, "/") != strings.TrimRight(baseURL, "/") || ch.Key != apiKey || ch.ChannelInfo.IsMultiKey {
+		return errors.New("实际视频请求与已核实的渠道凭据不一致")
+	}
+	base, err := url.Parse(baseURL)
+	if err != nil || request == nil || request.URL == nil || request.URL.User != nil || request.URL.Scheme != base.Scheme || !strings.EqualFold(request.URL.Host, base.Host) {
+		return errors.New("实际视频请求地址与已核实的渠道不一致")
+	}
+	if request.Header.Get("Authorization") != "Bearer "+apiKey {
+		return errors.New("实际视频鉴权与账号核实凭据不一致")
+	}
+	for _, id := range assetIDs {
+		binding, err := model.GetOwnedAICCAssetBinding(userID, id)
+		if err != nil || binding.AICCAccountID != cfg.AICCAccountID {
+			return errors.New("实际视频请求包含不属于当前素材账号的引用")
 		}
-		if err == nil && assetChannelID == 0 {
-			defaultCfg := GetAICCConfig()
-			if defaultCfg.AccessKeyID != "" && (ak != defaultCfg.AccessKeyID || sk != defaultCfg.AccessKeySecret) {
-				return errors.New("人物素材仅可使用其所属移动云账号渠道，请选择移动云渠道后重试")
-			}
+	}
+	if len(snapshot) > 0 && snapshot[0] != nil {
+		fingerprint, err := AICCChannelCredentialFingerprint(*ch)
+		if err != nil {
+			return err
 		}
+		*snapshot[0] = model.AICCDispatchSnapshot{ChannelID: channelID, AccountID: cfg.AICCAccountID, BaseURL: baseURL, ConfigFingerprint: fingerprint}
 	}
+	return nil
+}
 
-	targetCfg, err := GetAICCConfigForChannel(channelID)
-	if err != nil || targetCfg.AccessKeyID == "" || targetCfg.AccessKeySecret == "" {
-		return errors.New("该视频渠道未配置有效的移动云 AICC 密钥凭据，请选择已配置的移动云专线渠道")
+func ValidateAICCTaskSource(task *model.Task, ch *model.Channel) error {
+	if task.PrivateData.Execution == nil || task.PrivateData.Execution.AICC == nil {
+		return nil
 	}
-
-	if ak != targetCfg.AccessKeyID || sk != targetCfg.AccessKeySecret {
-		return errors.New("人物素材仅可使用其所属移动云账号渠道，请选择对应移动云渠道后重试")
+	snapshot := task.PrivateData.Execution.AICC
+	if ch == nil || ch.Id != snapshot.ChannelID || task.ChannelId != snapshot.ChannelID {
+		return errors.New("素材视频任务渠道来源不一致")
+	}
+	cfg, err := aiccConfigFromChannel(*ch)
+	if err != nil || (!cfg.AccountVerified && !cfg.ChannelPinned) || cfg.AICCAccountID != snapshot.AccountID {
+		return errors.New("素材视频任务账号关联已变化，请恢复原配置后查询")
+	}
+	fingerprint, err := AICCChannelCredentialFingerprint(*ch)
+	if err != nil || fingerprint != snapshot.ConfigFingerprint || ch.BaseURL == nil || strings.TrimRight(*ch.BaseURL, "/") != strings.TrimRight(snapshot.BaseURL, "/") {
+		return errors.New("素材视频任务凭据或地址已变化，已暂停查询")
 	}
 	return nil
 }
@@ -247,7 +385,17 @@ func aiccChannelIDFromSlice(channelID []int) int {
 }
 
 func doAICCRequest(ctx context.Context, channelID int, method, path string, body any) ([]byte, error) {
-	cfg, err := GetAICCConfigForChannel(channelID)
+	cfg, pinned := ctx.Value(aiccConfigContextKey{}).(AICCConfig)
+	var err error
+	if pinned {
+		if channelID != cfg.ChannelID || cfg.ChannelID <= 0 {
+			return nil, errors.New("AICC 请求与已固定的渠道来源不一致")
+		}
+	} else if channelID == 0 {
+		cfg, err = ResolveDefaultAICCConfig()
+	} else {
+		cfg, err = GetAICCConfigForChannel(channelID)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -296,10 +444,15 @@ func doAICCRequest(ctx context.Context, channelID int, method, path string, body
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "LaunchAI-AICC-Client/1.0")
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		// Transport errors may include the signed URL and its access key.
+		return nil, errors.New("移动云素材服务请求失败，请稍后重试")
+	}
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		resp.Body.Close()
+		return nil, errors.New("移动云素材服务返回非预期跳转")
 	}
 	defer resp.Body.Close()
 
