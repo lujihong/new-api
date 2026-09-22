@@ -197,17 +197,28 @@ func ApplyOriginTaskAffinity(c *gin.Context, info *relaycommon.RelayInfo) *dto.T
 // 构建/发送/解析上游请求 → 提交后计费调整(AdjustBillingOnSubmit)。
 // 共享控制器编排负责未落库退款、最终额度预留、落库和结算。
 func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitResult, *dto.TaskError) {
+	adaptor, platform, taskErr := prepareTaskSubmission(c, info)
+	if taskErr != nil {
+		return nil, taskErr
+	}
+	return submitPreparedTask(c, info, adaptor, platform)
+}
+
+// prepareTaskSubmission owns submission stages 1–6. It never reserves quota,
+// sends the submit request, or persists a task. Adaptors may resolve network
+// credentials during validation; quote callers must first pin a safe plugin.
+func prepareTaskSubmission(c *gin.Context, info *relaycommon.RelayInfo) (adaptor channel.TaskAdaptor, platform constant.TaskPlatform, taskErr *dto.TaskError) {
 	info.InitChannelMeta(c)
 
 	// 1. 确定 platform → 创建适配器 → 验证请求
-	platform := constant.TaskPlatform(c.GetString("platform"))
+	platform = constant.TaskPlatform(c.GetString("platform"))
 	if platform == "" {
 		platform = GetTaskPlatform(c)
 	}
-	platform, adaptor := getTaskAdaptorForRequest(c, platform)
+	platform, adaptor = getTaskAdaptorForRequest(c, platform)
 	if adaptor == nil {
 		code, message := TaskPlatformUnavailableError(platform)
-		return nil, service.TaskErrorWrapperLocal(errors.New(message), code, http.StatusBadRequest)
+		return nil, platform, service.TaskErrorWrapperLocal(errors.New(message), code, http.StatusBadRequest)
 	}
 	// buildSubmitRequest runs during validation and the unreleased plugin
 	// contract exposes this host-generated id to that hook.
@@ -225,11 +236,11 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	if mappedBeforeValidate {
 		info.UpstreamModelName = info.OriginModelName
 		if err := helper.ModelMappedHelper(c, info, nil); err != nil {
-			return nil, service.TaskErrorWrapperLocal(err, "model_mapping_failed", http.StatusBadRequest)
+			return nil, platform, service.TaskErrorWrapperLocal(err, "model_mapping_failed", http.StatusBadRequest)
 		}
 	}
 	if taskErr := adaptor.ValidateRequestAndSetAction(c, info); taskErr != nil {
-		return nil, taskErr
+		return nil, platform, taskErr
 	}
 
 	// 2. 确定模型名称
@@ -242,7 +253,7 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 		info.OriginModelName = modelName
 		info.UpstreamModelName = modelName
 		if err := helper.ModelMappedHelper(c, info, nil); err != nil {
-			return nil, service.TaskErrorWrapperLocal(err, "model_mapping_failed", http.StatusBadRequest)
+			return nil, platform, service.TaskErrorWrapperLocal(err, "model_mapping_failed", http.StatusBadRequest)
 		}
 	}
 
@@ -261,23 +272,23 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	if useTiered {
 		provider, supported := adaptor.(channel.TaskUsageFactsProvider)
 		if billingexpr.UsesFixedPricing(exprStr) {
-			return nil, service.TaskErrorWrapper(fmt.Errorf("fixed pricing is not supported for task usage expressions"), "model_price_error", http.StatusBadRequest)
+			return nil, platform, service.TaskErrorWrapper(fmt.Errorf("fixed pricing is not supported for task usage expressions"), "model_price_error", http.StatusBadRequest)
 		}
 		if !exists || !supported {
-			return nil, service.TaskErrorWrapper(fmt.Errorf("task model %s has no usage expression or meter", modelName), "model_price_error", http.StatusBadRequest)
+			return nil, platform, service.TaskErrorWrapper(fmt.Errorf("task model %s has no usage expression or meter", modelName), "model_price_error", http.StatusBadRequest)
 		}
 		sharedModel := pinnedPlugin.Generation.SharedModel(modelName) || pinnedPlugin.Generation.SharedModel(info.UpstreamModelName)
 		if sharedModel && pinnedPlugin.Plugin != nil {
 			schema, _ := pinnedPlugin.Plugin.Meta.UsageForModel(info.UpstreamModelName)
 			if !billing_setting.TaskExprCompatible(exprStr, schema) {
-				return nil, service.TaskErrorWrapper(fmt.Errorf("task model %s pricing is not configured for plugin %s", modelName, pluginKey), "model_price_error", http.StatusBadRequest)
+				return nil, platform, service.TaskErrorWrapper(fmt.Errorf("task model %s pricing is not configured for plugin %s", modelName, pluginKey), "model_price_error", http.StatusBadRequest)
 			}
 		}
 		var facts map[string]any
 		if validatedProvider, ok := adaptor.(channel.TaskValidatedUsageFactsProvider); ok {
 			facts, err = validatedProvider.ExtractUsageFactsValidated(c, info)
 			if err != nil {
-				return nil, service.TaskErrorWrapperLocal(err, "plugin_usage_invalid", http.StatusBadRequest)
+				return nil, platform, service.TaskErrorWrapperLocal(err, "plugin_usage_invalid", http.StatusBadRequest)
 			}
 		} else {
 			facts = provider.ExtractUsageFacts(c, info)
@@ -287,12 +298,12 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 		if requestProvider, ok := adaptor.(channel.TaskBillingRequestParametersProvider); ok {
 			requestParams, err = requestProvider.TaskBillingRequestParameters(c, info)
 			if err != nil {
-				return nil, service.TaskErrorWrapperLocal(err, "plugin_request_invalid", http.StatusBadRequest)
+				return nil, platform, service.TaskErrorWrapperLocal(err, "plugin_request_invalid", http.StatusBadRequest)
 			}
 			if requestParams != nil {
 				requestBody, err = common.Marshal(requestParams)
 				if err != nil {
-					return nil, service.TaskErrorWrapperLocal(err, "plugin_request_invalid", http.StatusBadRequest)
+					return nil, platform, service.TaskErrorWrapperLocal(err, "plugin_request_invalid", http.StatusBadRequest)
 				}
 			}
 		}
@@ -301,7 +312,7 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 			if runErr == nil {
 				runErr = fmt.Errorf("negative task expression result")
 			}
-			return nil, service.TaskErrorWrapper(runErr, "model_price_error", http.StatusBadRequest)
+			return nil, platform, service.TaskErrorWrapper(runErr, "model_price_error", http.StatusBadRequest)
 		}
 		groupRatioInfo := helper.HandleGroupRatio(c, info)
 		quota, clamp := common.QuotaRoundChecked(cost * common.QuotaPerUnit * groupRatioInfo.GroupRatio)
@@ -311,7 +322,7 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	} else {
 		priceData, err = helper.ModelPriceHelperPerCall(c, info)
 		if err != nil {
-			return nil, service.TaskErrorWrapper(err, "model_price_error", http.StatusBadRequest)
+			return nil, platform, service.TaskErrorWrapper(err, "model_price_error", http.StatusBadRequest)
 		}
 	}
 	info.PriceData = priceData
@@ -324,7 +335,7 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 		if validatedProvider, ok := adaptor.(channel.TaskValidatedBillingProvider); ok {
 			estimatedRatios, err = validatedProvider.EstimateBillingValidated(c, info)
 			if err != nil {
-				return nil, service.TaskErrorWrapperLocal(err, "plugin_usage_invalid", http.StatusBadRequest)
+				return nil, platform, service.TaskErrorWrapperLocal(err, "plugin_usage_invalid", http.StatusBadRequest)
 			}
 		} else {
 			estimatedRatios = adaptor.EstimateBilling(c, info)
@@ -343,6 +354,11 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 		info.PriceData.Quota = quota
 		noteTaskQuotaClamp(info, clamp)
 	}
+
+	return adaptor, platform, nil
+}
+
+func submitPreparedTask(c *gin.Context, info *relaycommon.RelayInfo, adaptor channel.TaskAdaptor, platform constant.TaskPlatform) (*TaskSubmitResult, *dto.TaskError) {
 
 	// 7. 预扣费（仅首次 — 重试时 info.Billing 已存在，跳过）
 	if info.Billing == nil && !info.PriceData.FreeModel {

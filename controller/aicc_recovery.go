@@ -37,6 +37,8 @@ func RecoverAICCGroup(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "恢复必须明确指定有效的 channel_id"})
 		return
 	}
+	// This dedicated root-only endpoint is an explicit management operation.
+	c.Set("aicc_management_scope", true)
 	cfg, ok := aiccRequestConfig(c, nil)
 	if !ok {
 		return

@@ -618,8 +618,12 @@ func PrepareTaskPluginEndpoint() gin.HandlerFunc {
 			candidateContext.Operation = candidate.Operation.Name
 			// Parsing belongs to durable submission; disconnecting only stops
 			// the later Responses observation.
+			decodeContext := c.Request.Context()
+			if c.GetInt(QuoteBatchCountKey) == 0 {
+				decodeContext = context.WithoutCancel(decodeContext)
+			}
 			resolvedValue, callErr := candidate.Plugin.Engine.CallPathWithAdmissionTimeout(
-				context.WithoutCancel(c.Request.Context()), pluginruntime.DefaultCallTimeout,
+				decodeContext, pluginruntime.DefaultCallTimeout,
 				"protocols", []string{candidate.Protocol, "decodeRequest"}, candidateContext.JSValue(),
 			)
 			result, resultOK := resolvedValue.(map[string]any)

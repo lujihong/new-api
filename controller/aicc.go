@@ -80,6 +80,31 @@ func aiccBinding(cfg service.AICCConfig) model.AICCBinding {
 	return model.AICCBinding{ChannelID: cfg.ChannelID, AICCAccountID: cfg.AICCAccountID}
 }
 
+func aiccAccessError(c *gin.Context, err error) {
+	status := http.StatusForbidden
+	if errors.Is(err, service.ErrAICCAuthenticationRequired) {
+		status = http.StatusUnauthorized
+	}
+	if errors.Is(err, service.ErrAICCAccessUnavailable) {
+		status = http.StatusServiceUnavailable
+	}
+	aiccError(c, status, err)
+}
+
+func aiccCheckChannelAccess(c *gin.Context, channelID int) bool {
+	if !checkAICCAuth(c) {
+		return false
+	}
+	if isAICCAdmin(c) {
+		return true
+	}
+	if _, err := service.AICCChannelModels(c, channelID, false); err != nil {
+		aiccAccessError(c, err)
+		return false
+	}
+	return true
+}
+
 func aiccRequestConfig(c *gin.Context, bodyChannel *int) (service.AICCConfig, bool) {
 	id, present, err := aiccChannelIDFromRequest(c)
 	if err == nil && bodyChannel != nil {
@@ -97,11 +122,22 @@ func aiccRequestConfig(c *gin.Context, bodyChannel *int) (service.AICCConfig, bo
 		return service.AICCConfig{}, false
 	}
 	var cfg service.AICCConfig
-	if present {
-		cfg, err = service.GetAICCConfigForChannel(id)
-	} else {
-		cfg, err = service.ResolveDefaultAICCConfig()
+	if !present {
+		channels, accessErr := service.ListAccessibleAICCChannels(c, false)
+		if accessErr != nil {
+			aiccAccessError(c, accessErr)
+			return cfg, false
+		}
+		if len(channels) != 1 {
+			aiccError(c, 400, fmt.Errorf("存在多个 AICC 渠道，请明确选择素材所属渠道"))
+			return cfg, false
+		}
+		id = channels[0]["id"].(int)
 	}
+	if !aiccCheckChannelAccess(c, id) {
+		return cfg, false
+	}
+	cfg, err = service.GetAICCConfigForChannel(id)
 	if err != nil {
 		aiccError(c, 400, err)
 		return cfg, false
@@ -125,6 +161,9 @@ func aiccConfigForBinding(c *gin.Context, binding model.AICCBinding) (service.AI
 	}
 	if present && id != binding.ChannelID {
 		aiccError(c, 409, fmt.Errorf("请求渠道与素材绑定不一致"))
+		return service.AICCConfig{}, false
+	}
+	if !aiccCheckChannelAccess(c, binding.ChannelID) {
 		return service.AICCConfig{}, false
 	}
 	cfg, err := service.GetAICCConfigForChannel(binding.ChannelID)
@@ -345,9 +384,9 @@ func ListAICCChannels(c *gin.Context) {
 		aiccError(c, 400, err)
 		return
 	}
-	channels, err := service.ListAvailableAICCChannels()
+	channels, err := service.ListAccessibleAICCChannels(c, isAICCAdmin(c))
 	if err != nil {
-		aiccError(c, 409, err)
+		aiccAccessError(c, err)
 		return
 	}
 	common.ApiSuccess(c, channels)

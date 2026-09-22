@@ -1,0 +1,12 @@
+{
+  "title": "API 参考",
+  "description": "标准接口接入文档",
+  "icon": "Code",
+  "root": true,
+  "pages": [
+    "index",
+    "real-person-assets",
+    "request-pricing",
+    "ai-model"
+  ]
+}

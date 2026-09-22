@@ -32,7 +32,14 @@ func setupAICCTestDB(t *testing.T) *gorm.DB {
 	db, err := gorm.Open(sqlite.Open("file:aicc-controller-test?mode=memory&cache=shared"), &gorm.Config{})
 	require.NoError(t, err)
 	model.DB = db
-	require.NoError(t, db.AutoMigrate(&model.Channel{}, &model.AICCAccountAttestation{}, &model.AICCAssetGroupOwnership{}, &model.AICCAssetOwnership{}, &model.AICCAuthSession{}))
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Ability{}, &model.Channel{}, &model.AICCAccountAttestation{}, &model.AICCAssetGroupOwnership{}, &model.AICCAssetOwnership{}, &model.AICCAuthSession{}))
+	oldRedis := common.RedisEnabled
+	common.RedisEnabled = false
+	t.Cleanup(func() { common.RedisEnabled = oldRedis })
+	for _, id := range []int{101, 202, 999} {
+		require.NoError(t, db.Create(&model.User{Id: id, Username: strconv.Itoa(id), AffCode: strconv.Itoa(id), Group: "default", Status: common.UserStatusEnabled}).Error)
+	}
+	require.NoError(t, db.Create(&model.Ability{Group: "default", Model: "aicc-test-model", ChannelId: 1, Enabled: true}).Error)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if handler := aiccMockHandlers[db]; handler != nil {
 			handler(w, r)

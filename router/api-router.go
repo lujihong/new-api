@@ -38,6 +38,7 @@ func SetApiRouter(router *gin.Engine) {
 		apiRouter.GET("/home_page_content", controller.GetHomePageContent)
 		apiRouter.GET("/pricing", middleware.HeaderNavModuleAuth("pricing"), controller.GetPricing)
 		apiRouter.GET("/pricing/self", middleware.DisableCache(), middleware.TokenOrUserAuth(), controller.GetPricing)
+		apiRouter.POST("/pricing/quote", middleware.TokenAuth(), middleware.QuoteRequest(), middleware.PinTaskPluginEndpoint(), middleware.PrepareTaskPluginEndpoint(), middleware.Distribute(), controller.Quote)
 		perfMetricsRoute := apiRouter.Group("/perf-metrics")
 		perfMetricsRoute.Use(middleware.HeaderNavModulePublicOrUserAuth("pricing"))
 		{

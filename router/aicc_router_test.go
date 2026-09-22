@@ -34,7 +34,8 @@ func TestAICCRealAuthenticationScopeMatrix(t *testing.T) {
 		sqlDB, _ := db.DB()
 		sqlDB.Close()
 	})
-	require.NoError(t, db.AutoMigrate(&model.User{}, &model.UserSession{}, &model.Token{}, &model.AuditLog{}, &model.AICCAssetGroupOwnership{}, &model.AICCAssetOwnership{}, &model.Channel{}, &model.AICCAccountAttestation{}))
+	require.NoError(t, db.AutoMigrate(&model.Ability{}, &model.User{}, &model.UserSession{}, &model.Token{}, &model.AuditLog{}, &model.AICCAssetGroupOwnership{}, &model.AICCAssetOwnership{}, &model.Channel{}, &model.AICCAccountAttestation{}))
+	require.NoError(t, db.Create(&model.Ability{Group: "default", Model: "aicc-test-model", ChannelId: 6, Enabled: true}).Error)
 	oldMainType, oldLogType, oldMaster := common.MainDatabaseType(), common.LogDatabaseType(), common.IsMasterNode
 	common.SetMainDatabaseType(common.DatabaseTypeSQLite)
 	common.IsMasterNode = false

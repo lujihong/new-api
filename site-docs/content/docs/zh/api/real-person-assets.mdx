@@ -1,0 +1,177 @@
+---
+title: 真人素材与第三方客户端接入
+description: 使用本人 API Key 完成 H5 授权、素材上传入库和 Seedance 引用；适用于桌面客户端及自有应用
+---
+
+## 适用范围与地址
+
+本页适用于已开通移动云 Seedance 素材渠道的用户。通用 OpenAI SDK 不会自动实现真人素材管理，客户端需要额外接入本页 REST API。
+
+| 用途 | 地址 |
+| --- | --- |
+| 素材与认证 | `https://api.xybcloud.com/api/aicc` |
+| 标准模型调用 | `https://api.xybcloud.com/v1` |
+| Seedance 原生兼容视频任务 | `https://api.xybcloud.com/api/v3/contents/generations/tasks` |
+
+所有个人素材请求使用 `Authorization: Bearer YOUR_API_KEY`。这是用户在鑫元宝创建的 API Key，不是移动云 AK/SK。移动云访问密钥仅保留在网关服务端；不要嵌入桌面客户端、网页、日志或文档。
+
+用户 Key 不得调用 `/api/aicc/admin/*`。管理员自己的 API Key 在个人素材接口中也按本人权限隔离，不具有素材管理会话的特权。
+
+## 获取可用渠道
+
+```http
+GET /api/aicc/channels
+Authorization: Bearer YOUR_API_KEY
+```
+
+返回 `data` 数组，每项包含 `id`、`name`、`region`、`models`。只能选择当前用户分组、令牌分组和模型授权允许的渠道。
+
+后续请求显式传 `?channel_id=渠道整数ID`，或 `X-AICC-Channel-ID` 请求头。两者同时提供必须相同。不要把地区名称、客户端自己的字符串渠道 ID、模型名当成此整数 ID。无权使用渠道会返回 403；权限服务无法读取时返回 503。
+
+## 真人认证与授权
+
+1. 调用 `POST /api/aicc/auth/session?channel_id=CHANNEL_ID`，无需业务 body。
+2. 成功响应的 `data` 直接包含 `bytedToken`、`h5Link`、`expiresIn`、`channelId`、`aiccAccountId`。
+3. 客户端把 `h5Link` 渲染成二维码或使用系统浏览器打开。必须由本人确认授权并按 H5 提示完成活体认证；不能替用户自动完成或绕过认证。
+4. 期限以本次返回的 `expiresIn` 为准，不要硬编码。不要把 token 或带签名的 H5 URL 写入分析日志。
+5. 用户完成后，推荐用 POST 查询，避免 token 出现在 URL 和代理访问日志：
+
+```http
+POST /api/aicc/auth/group?channel_id=CHANNEL_ID
+Authorization: Bearer YOUR_API_KEY
+Content-Type: application/json
+
+{"bytedToken":"本次会话返回的Token"}
+```
+
+只在 `success=true` 且 `data.authenticated=true` 后认为本次认证已核实。`data.body` 可能是 groupId 字符串，也可能是包含 `groupId` 的对象。上游仅返回组 ID 时，网关会按原渠道继续核验组类型与归属；有 ID 不代表客户端可以直接认领。
+
+认证会话绑定创建它的本用户、渠道、配置身份和有效期。切换账号、跨渠道查询、过期 token 或渠道身份变更会被拒绝。用户取消后停止本地等待；已完成的上游授权不会因为关闭弹窗而撤销。
+
+真人组来自认证流程。`POST /asset-groups` 用于创建 AIGC 虚拟人物组，不能用它伪造真人授权。纯虚拟人像与真人素材应分开管理；AI 生成的写实面孔也可能触发内容审核。
+
+## 组与素材 API
+
+以下路径均以 `/api/aicc` 为前缀，并携带本人 Key 及 channel_id。
+
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| GET | `/asset-groups` | 查询本人素材组；可用 `groupType=LivenessFace` 或 `AIGC` 筛选 |
+| POST | `/asset-groups` | 创建虚拟人物素材组 |
+| GET / PUT / DELETE | `/asset-groups/:id` | 查询、更新、删除本人素材组 |
+| POST | `/uploads` | multipart 上传本地文件，返回可供入库的临时 URL |
+| POST | `/assets` | 使用组 ID 和素材 URL 创建入库素材 |
+| GET | `/assets` | 查询素材列表，可传 `groupType`、`groupIds`、`pageNo`、`pageSize` |
+| GET / PUT / DELETE | `/assets/:id` | 查询、更新、删除本人素材 |
+
+删除操作应由用户明确触发。删除组可能影响组内素材，客户端应提示影响范围。
+
+## 本地文件：上传与入库是两步
+
+第一步上传，仅支持以下三个 multipart 字段：
+
+```bash
+curl -X POST 'https://api.xybcloud.com/api/aicc/uploads?channel_id=CHANNEL_ID' \
+  -H "Authorization: Bearer $XYB_API_KEY" \
+  -F 'groupId=GROUP_ID' \
+  -F 'assetType=Audio' \
+  -F 'file=@./voice.mp3'
+```
+
+替换示例中的 CHANNEL_ID、GROUP_ID。`XYB_API_KEY` 从本机安全存储或环境读取。音频使用 `Audio`，图片使用 `Image`，视频使用 `Video`。
+
+响应 `data.url` 是临时入库 URL。不要自行拼接或修改签名参数。随后立即调用第二步：
+
+```http
+POST /api/aicc/assets?channel_id=CHANNEL_ID
+Authorization: Bearer YOUR_API_KEY
+Content-Type: application/json
+
+{
+  "groupId": "GROUP_ID",
+  "assetName": "本人声音样本",
+  "assetUrl": "第一步返回的data.url",
+  "assetType": "Audio"
+}
+```
+
+已有可公开读取的 HTTP/HTTPS 素材 URL，也可按网关与上游规则直接创建素材。素材入库接口不收 Base64；视频生成接口支持的输入方式不能直接套用到素材入库接口。
+
+创建后查询 `GET /api/aicc/assets/ASSET_ID?channel_id=CHANNEL_ID`。多数上游接口结果放在 `data.body`，创建素材的 `body` 可能直接是素材 ID 字符串。
+
+- `PROCESSING`：继续等待，建议每 10 秒查询，并提供取消等待和手动刷新。
+- `ACTIVE`：当前素材可引用。
+- `FAILED`：展示 `errorMessage`，不可直接拿来生成。
+
+超时不等于失败，也不等于已经入库成功。发生超时先查询列表确认，避免盲目重复创建。预览 URL 会过期（官方详情接口标注 12 小时），刷新详情获取新的预览，不要用预览 URL 代替稳定的 `asset://` 身份。
+
+## 真人声音参考的视频调用
+
+真人音频和人物图片/视频归属同一授权人物组，遵守素材平台一致性及审核规则。公开文档没有列出独立的声纹认证接口；按 H5 实际授权流程办理，不自行声称已通过声纹认证。
+
+音频格式 MP3/WAV，单段 2–15 秒、平台上传上限 15 MiB；视频请求最多三段音频，总时长不超过15秒，且需至少搭配一张参考图片或一段参考视频。最终是否可用以上游校验为准。
+
+下面是请求结构示例，替换所有占位值并确认模型在渠道列表中可用。真正提交会进入计费生成流程：
+
+```json
+{
+  "model": "渠道允许的Seedance模型ID",
+  "content": [
+    {"type": "text", "text": "图片1中的人物使用音频1作为声音参考，自然说出指定台词。"},
+    {"type": "image_url", "image_url": {"url": "asset://asset-图片素材ID"}, "role": "reference_image"},
+    {"type": "audio_url", "audio_url": {"url": "asset://asset-音频素材ID"}, "role": "reference_audio"}
+  ],
+  "duration": 5,
+  "resolution": "720p",
+  "ratio": "16:9",
+  "generate_audio": true
+}
+```
+
+发送至 `POST /api/v3/contents/generations/tasks`，使用同一用户 Key。素材 ID 必须来自前述真实响应。网关根据素材归属约束可用渠道，再与模型、分组和令牌权限取交集；客户端不能依靠指定渠道绕过权限。不同渠道/账号的素材不能随意混用。
+
+保留创建任务返回的原始响应和任务标识，按该视频协议对应的任务查询与下载文档处理，不把上游任务 ID 与网关公共 task ID 相互替换。生成结果及时下载或转存；素材认证成功不代表最终生成免审，也不保证音色百分之百一致。
+
+## 返回体与错误处理
+
+客户端必须同时检查 HTTP 状态和业务字段：
+
+```json
+{"success": true, "message": "", "data": {"state": "OK", "body": {}}}
+```
+
+个人素材控制器错误通常为 `{ "success": false, "message": "..." }`；令牌认证层也可能返回 `{ "error": { "message": "...", "type": "new_api_error", "code": "..." } }`。不要只因 HTTP 200 就认为成功，也不要对每个 `data` 无条件再取 `.body`（会话/上传与素材接口不同）。
+
+| 状态 | 客户端处理 |
+| --- | --- |
+| 400 | 检查字段、渠道 ID 冲突、素材类型与格式 |
+| 401 | 提示重新配置有效 Key 或登录 |
+| 403 | 检查模型/分组/渠道权限以及素材所有者，不切其他账号绕过 |
+| 409 | 刷新归属/配置状态；提示重认证或联系管理员核实 |
+| 413 | 文件或请求过大，压缩/裁剪后重选 |
+| 429 | 等待并按退避策略重试，保留用户输入 |
+| 502 / 503 | 服务暂不可用，保留当前选择，不改成免费或已成功 |
+
+原始错误可在详情中完整查看；日常展示用简明中文原因，不把 Key、H5 签名 URL 或上传签名 URL 暴露给无关日志。
+
+## 浪起等桌面客户端如何接入
+
+实现一个素材面板即可接入上述流程，无需在客户端保存移动云账号密钥：
+
+1. 用户配置鑫元宝 API Key；使用系统安全存储保存。
+2. 查询渠道列表，让用户明确选择，有多个渠道时不默选第一个。
+3. 展示真人与虚拟人物组；发起 H5 后展示二维码，由本人完成。
+4. 保存 `{assetId, groupId, channelId, aiccAccountId, assetType}`，预览 URL 只作短期缓存。
+5. 上传文件后创建素材并查询状态，只有 ACTIVE 能选入生成。
+6. 视频请求使用 `asset://`；任务记录保存本次用户/模型/渠道来源，恢复和重试沿用来源，变更时提示重新核实。
+7. 切换用户/Key/渠道时取消旧请求，清理旧面板数据；迟到响应不可覆盖新账号。
+
+新增菜单、表单或适配器不等于真人授权可以自动完成。本站 API 也不授予第三方客户端访问其他用户素材或使用管理员恢复接口的权限。
+
+## 官方资料
+
+- [移动云私域真人素材指南](https://ecloud.10086.cn/op-help-center/doc/article/99622)
+- [创建H5认证会话](https://ecloud.10086.cn/op-help-center/doc/article/100375)
+- [创建素材](https://ecloud.10086.cn/op-help-center/doc/article/100378)
+- [素材详情与状态](https://ecloud.10086.cn/op-help-center/doc/article/100369)
+- [视频生成与音频参考](https://ecloud.10086.cn/op-help-center/doc/article/99301)

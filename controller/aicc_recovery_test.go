@@ -12,8 +12,7 @@ import (
 func TestAICCRecoveryRootOnlyAndCannotReassign(t *testing.T) {
 	db := setupAICCTestDB(t)
 	require.NoError(t, db.AutoMigrate(&model.User{}, &model.AICCRecoveryAudit{}))
-	require.NoError(t, db.Create(&model.User{Id: 101, Username: "test-a", AffCode: "test-a", Password: "offline", Status: common.UserStatusEnabled}).Error)
-	require.NoError(t, db.Create(&model.User{Id: 202, Username: "test-b", AffCode: "test-b", Password: "offline", Status: common.UserStatusEnabled}).Error)
+	// Users 101 and 202 are seeded by the shared authenticated AICC fixture.
 	calls := 0
 	withAICCMock(t, func(w http.ResponseWriter, r *http.Request) {
 		calls++

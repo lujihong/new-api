@@ -85,6 +85,7 @@ func TestAICCSessionUsesBindingWhenDefaultBecomesAmbiguous(t *testing.T) {
 	ch.Id = 2
 	ch.Name = "second"
 	require.NoError(t, db.Create(&ch).Error)
+	require.NoError(t, db.Create(&model.Ability{Group: "default", Model: "aicc-test-model", ChannelId: 2, Enabled: true}).Error)
 	calls := 0
 	withAICCMock(t, func(w http.ResponseWriter, r *http.Request) {
 		calls++

@@ -18,6 +18,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
+	hosttypes "github.com/QuantumNous/new-api/types"
 
 	"github.com/bytedance/gopkg/util/gopool"
 	"github.com/gin-gonic/gin"
@@ -226,6 +227,27 @@ func composeTieredTextQuota(relayInfo *relaycommon.RelayInfo, summary textQuotaS
 	return total
 }
 
+// CalculateFixedTextQuota calculates legacy fixed-price text settlement without
+// consuming quota or fabricating usage. Quotes pass billableUsage=true to price
+// a successful billable request; settlement passes its actual usage predicate.
+// Tool surcharges are added after OtherRatios, exactly as in text settlement.
+// Inputs must be the validated pricing snapshot and resolved surcharge.
+func CalculateFixedTextQuota(price hosttypes.PriceData, quotaPerUnit float64, toolSurcharge decimal.Decimal, billableUsage bool) (int, *common.QuotaClamp) {
+	amount := decimal.NewFromFloat(price.ModelPrice).
+		Mul(decimal.NewFromFloat(quotaPerUnit)).
+		Mul(decimal.NewFromFloat(price.GroupRatioInfo.GroupRatio))
+	amount = price.ApplyOtherRatiosToDecimal(amount).Add(toolSurcharge)
+	quota, clamp := common.QuotaFromDecimalChecked(amount)
+	if !billableUsage {
+		return 0, clamp
+	}
+	ratio := decimal.NewFromFloat(price.ModelRatio).Mul(decimal.NewFromFloat(price.GroupRatioInfo.GroupRatio))
+	if !ratio.IsZero() && quota == 0 {
+		quota = 1
+	}
+	return quota, clamp
+}
+
 // calculateTextQuotaSummary expects a usage already remapped by
 // effectiveBillingUsage; PostTextConsumeQuota performs that remap once and shares
 // the result with tiered billing, affinity observation and logging.
@@ -292,7 +314,6 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 	dImageRatio := decimal.NewFromFloat(summary.ImageRatio)
 	dModelRatio := decimal.NewFromFloat(summary.ModelRatio)
 	dGroupRatio := decimal.NewFromFloat(summary.GroupRatio)
-	dModelPrice := decimal.NewFromFloat(summary.ModelPrice)
 	dCacheCreationRatio := decimal.NewFromFloat(summary.CacheCreationRatio)
 	dCacheCreationRatio5m := decimal.NewFromFloat(summary.CacheCreationRatio5m)
 	dCacheCreationRatio1h := decimal.NewFromFloat(summary.CacheCreationRatio1h)
@@ -364,13 +385,10 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 		summary.Quota = quota
 		noteQuotaClamp(relayInfo, clamp)
 	} else {
-		quotaCalculateDecimal := dModelPrice.Mul(dQuotaPerUnit).Mul(dGroupRatio)
-		quotaCalculateDecimal = quotaCalculateDecimal.Add(audioInputQuota)
-		quotaCalculateDecimal = relayInfo.PriceData.ApplyOtherRatiosToDecimal(quotaCalculateDecimal)
-		quotaCalculateDecimal = quotaCalculateDecimal.Add(summary.ToolCallSurchargeQuota)
-		quota, clamp := common.QuotaFromDecimalChecked(quotaCalculateDecimal)
+		quota, clamp := CalculateFixedTextQuota(relayInfo.PriceData, common.QuotaPerUnit, summary.ToolCallSurchargeQuota, summary.hasBillableUsage())
 		summary.Quota = quota
 		noteQuotaClamp(relayInfo, clamp)
+		return summary
 	}
 
 	if !summary.hasBillableUsage() {

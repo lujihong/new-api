@@ -33,7 +33,11 @@ func aiccTestDB(t *testing.T) *gorm.DB {
 			_ = sqlDB.Close()
 		}
 	})
-	require.NoError(t, db.AutoMigrate(&model.Channel{}, &model.AICCAccountAttestation{}, &model.AICCAuthSession{}, &model.AICCAssetGroupOwnership{}, &model.AICCAssetOwnership{}))
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Ability{}, &model.Channel{}, &model.AICCAccountAttestation{}, &model.AICCAuthSession{}, &model.AICCAssetGroupOwnership{}, &model.AICCAssetOwnership{}))
+	oldRedis := common.RedisEnabled
+	common.RedisEnabled = false
+	t.Cleanup(func() { common.RedisEnabled = oldRedis })
+	require.NoError(t, db.Create(&model.User{Id: 1, Username: "aicc-fixture", AffCode: "aicc-fixture", Group: "default", Status: common.UserStatusEnabled}).Error)
 	return db
 }
 
@@ -50,6 +54,7 @@ func aiccTestInfo(t *testing.T, endpoint string) string {
 func aiccTestChannel(t *testing.T, db *gorm.DB, id int, endpoint string) service.AICCConfig {
 	t.Helper()
 	require.NoError(t, db.Create(&model.Channel{Id: id, Type: 54, Name: "AICC fixture", Status: common.ChannelStatusEnabled, OtherInfo: aiccTestInfo(t, endpoint)}).Error)
+	require.NoError(t, db.Create(&model.Ability{Group: "default", Model: "aicc-test-model", ChannelId: id, Enabled: true}).Error)
 	cfg, err := service.GetAICCConfigForChannel(id)
 	require.NoError(t, err)
 	require.Equal(t, id, cfg.ChannelID)

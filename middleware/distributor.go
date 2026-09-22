@@ -144,7 +144,11 @@ func Distribute() func(c *gin.Context) {
 				}
 				var selectGroup string
 
-				if preferredChannelID, found := service.GetPreferredChannelByAffinity(c, modelRequest.Model, usingGroup); found {
+				preferredChannelID, found := 0, false
+				if c.GetInt(QuoteBatchCountKey) == 0 {
+					preferredChannelID, found = service.GetPreferredChannelByAffinity(c, modelRequest.Model, usingGroup)
+				}
+				if found {
 					affinityUsable := false
 					preferred, err := model.CacheGetChannel(preferredChannelID)
 					affinitySatisfied := false
@@ -216,9 +220,13 @@ func Distribute() func(c *gin.Context) {
 			}
 		}
 		common.SetContextKey(c, constant.ContextKeyRequestStartTime, time.Now())
-		SetupContextForSelectedChannel(c, channel, modelRequest.Model)
+		setupErr := SetupContextForSelectedChannel(c, channel, modelRequest.Model)
+		if setupErr != nil && c.GetInt(QuoteBatchCountKey) > 0 {
+			abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "quote route is unavailable")
+			return
+		}
 		c.Next()
-		if channel != nil && c.Writer != nil && c.Writer.Status() < http.StatusBadRequest {
+		if c.GetInt(QuoteBatchCountKey) == 0 && channel != nil && c.Writer != nil && c.Writer.Status() < http.StatusBadRequest {
 			service.RecordChannelAffinity(c, channel.Id)
 		}
 	}
@@ -748,9 +756,33 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 	common.SetContextKey(c, constant.ContextKeyChannelModelMapping, channel.GetModelMapping())
 	common.SetContextKey(c, constant.ContextKeyChannelStatusCodeMapping, channel.GetStatusCodeMapping())
 
-	key, index, newAPIError := channel.GetNextEnabledKey()
-	if newAPIError != nil {
-		return newAPIError
+	var key string
+	var index int
+	if c.GetInt(QuoteBatchCountKey) > 0 {
+		// A quote needs one eligible credential, not a rotation or persistence.
+		key = channel.Key
+		if channel.ChannelInfo.IsMultiKey {
+			lock := model.GetChannelPollingLock(channel.Id)
+			lock.Lock()
+			key = ""
+			for i, candidate := range channel.GetKeys() {
+				status, exists := channel.ChannelInfo.MultiKeyStatusList[i]
+				if !exists || status == common.ChannelStatusEnabled {
+					key, index = candidate, i
+					break
+				}
+			}
+			lock.Unlock()
+			if key == "" {
+				return types.NewError(errors.New("no enabled keys"), types.ErrorCodeChannelNoAvailableKey)
+			}
+		}
+	} else {
+		var newAPIError *types.NewAPIError
+		key, index, newAPIError = channel.GetNextEnabledKey()
+		if newAPIError != nil {
+			return newAPIError
+		}
 	}
 	if channel.ChannelInfo.IsMultiKey {
 		common.SetContextKey(c, constant.ContextKeyChannelIsMultiKey, true)

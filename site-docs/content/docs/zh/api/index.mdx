@@ -1,0 +1,157 @@
+---
+title: API 快速接入指南
+description: 鑫元宝云计算模型服务平台统一接入标准与接口参考
+---
+
+import { Card, Cards } from 'fumadocs-ui/components/card';
+import {
+  MessageSquare,
+  Image,
+  Video,
+  Headphones,
+  Database,
+  List,
+  Sparkles,
+  Zap,
+} from 'lucide-react';
+
+## 🚀 统一接入参数
+
+对话等标准接口可使用 **OpenAI 兼容协议**。视频任务、真人素材授权与管理需要按各自接口接入，通用 OpenAI 客户端不会自动具备这些功能。可用模型以当前用户 API Key 查询结果为准。
+
+- [真人素材与第三方客户端接入](/zh/docs/api/real-person-assets)：H5 本人授权、图片/视频/音频入库、Seedance 引用及浪起客户端接入。
+- [请求费用预估与积分换算](/zh/docs/api/request-pricing)：按本次参数和本人权限预估，区分固定计价与实际用量。
+
+```http
+# 基础请求地址 (Base URL)
+API Base URL: https://api.xybcloud.com/v1
+
+# 请求认证头部 (Header)
+Authorization: Bearer sk-xxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+---
+
+## ⚡ 三步极速接入
+
+1. **获取 API 令牌**：登录 [控制台](https://api.xybcloud.com/keys)，进入「令牌管理」生成您的专属 API Key；
+2. **配置请求终端**：将客户端（如 Cherry Studio / Cursor / Claude Code）或代码中的接口地址设为 `https://api.xybcloud.com/v1`；
+3. **选择模型发起调用**：指定模型名称（如 `gpt-4o`、`claude-3-7-sonnet`、`deepseek-chat`、`gemini-2.5-pro`），即刻享受稳定高并发算力。
+
+---
+
+## 📡 核心能力接口
+
+<Cards>
+  <Card
+    icon={<MessageSquare />}
+    title="对话补全 (Chat)"
+    description="支持 GPT-4o、Claude 3.7、DeepSeek-V3/R1、Gemini 2.5 等全部对话模型。"
+    href="/zh/docs/api/ai-model/chat/openai/createchatcompletion"
+  />
+  <Card
+    icon={<Image />}
+    title="图像生成 (Images)"
+    description="支持 DALL-E 3、FLUX、Midjourney、通义万象等高质量生图模型。"
+    href="/zh/docs/api/ai-model/images/openai/post-v1-images-generations"
+  />
+  <Card
+    icon={<Video />}
+    title="视频生成 (Video)"
+    description="支持 Kling 可灵、Sora、Vidu、火山 Seedance 视频生成接口。"
+    href="/zh/docs/api/ai-model/videos/kling/createklingtext2video"
+  />
+  <Card
+    icon={<Headphones />}
+    title="音频合成与转写 (Audio)"
+    description="提供 OpenAI Whisper 语音识别与 TTS 语音合成能力。"
+    href="/zh/docs/api/ai-model/audio/openai/createspeech"
+  />
+  <Card
+    icon={<Database />}
+    title="向量计算 (Embeddings)"
+    description="为知识库检索增强 (RAG) 提供高效文本嵌入向量计算。"
+    href="/zh/docs/api/ai-model/embeddings/createembedding"
+  />
+  <Card
+    icon={<List />}
+    title="模型清单查询 (Models)"
+    description="动态获取当前账号可调用的所有模型列表与状态。"
+    href="/zh/docs/api/ai-model/models/list/listmodels"
+  />
+</Cards>
+
+---
+
+## 💻 快速调用代码示例
+
+### Python (使用官方 `openai` 库)
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    api_key="YOUR_API_KEY", # 替换为您在控制台生成的 API Key
+    base_url="https://api.xybcloud.com/v1"
+)
+
+response = client.chat.completions.create(
+    model="deepseek-chat", # 或 gpt-4o / claude-3-7-sonnet 等
+    messages=[
+        {"role": "system", "content": "你是一位专业的 AI 助手。"},
+        {"role": "user", "content": "你好，请简单介绍一下自己。"}
+    ],
+    stream=True # 支持极速打字机流式输出
+)
+
+for chunk in response:
+    if chunk.choices[0].delta.content:
+        print(chunk.choices[0].delta.content, end="", flush=True)
+```
+
+### Node.js / TypeScript
+
+```javascript
+import OpenAI from "openai";
+
+const openai = new OpenAI({
+  apiKey: "YOUR_API_KEY",
+  baseURL: "https://api.xybcloud.com/v1",
+});
+
+async function main() {
+  const completion = await openai.chat.completions.create({
+    model: "gpt-4o",
+    messages: [{ role: "user", content: "请用一句话概括云计算的价值。" }],
+  });
+
+  console.log(completion.choices[0].message.content);
+}
+
+main();
+```
+
+### cURL (命令行测试)
+
+```bash
+curl https://api.xybcloud.com/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -d '{
+    "model": "deepseek-chat",
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "temperature": 0.7
+  }'
+```
+
+---
+
+## 🛠️ 常用客户端接入一览
+
+| 软件/环境 | 接口类型 | API 地址 (Base URL) |
+| :--- | :--- | :--- |
+| **Cherry Studio / ChatBox / NextChat** | OpenAI 兼容 | `https://api.xybcloud.com/v1` |
+| **Cursor / VS Code (Continue / Cline)** | OpenAI / Claude | `https://api.xybcloud.com/v1` |
+| **Claude Code (CLI)** | Anthropic / OpenAI | `https://api.xybcloud.com/v1` |
+| **Dify / FastGPT 知识库** | OpenAI API 格式 | `https://api.xybcloud.com/v1` |
+| **LangChain / LlamaIndex** | OpenAI Provider | `https://api.xybcloud.com/v1` |
