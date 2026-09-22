@@ -11,7 +11,7 @@ description: 使用本人 API Key 完成 H5 授权、素材上传入库和 Seeda
 | --- | --- |
 | 素材与认证 | `https://api.xybcloud.com/api/aicc` |
 | 标准模型调用 | `https://api.xybcloud.com/v1` |
-| Seedance 原生兼容视频任务 | `https://api.xybcloud.com/api/v3/contents/generations/tasks` |
+| Seedance 原生请求格式视频任务（查询使用网关格式） | `https://api.xybcloud.com/api/v3/contents/generations/tasks` |
 
 所有个人素材请求使用 `Authorization: Bearer YOUR_API_KEY`。这是用户在鑫元宝创建的 API Key，不是移动云 AK/SK。移动云访问密钥仅保留在网关服务端；不要嵌入桌面客户端、网页、日志或文档。
 
@@ -130,7 +130,25 @@ Content-Type: application/json
 
 发送至 `POST /api/v3/contents/generations/tasks`，使用同一用户 Key。素材 ID 必须来自前述真实响应。网关根据素材归属约束可用渠道，再与模型、分组和令牌权限取交集；客户端不能依靠指定渠道绕过权限。不同渠道/账号的素材不能随意混用。
 
-保留创建任务返回的原始响应和任务标识，按该视频协议对应的任务查询与下载文档处理，不把上游任务 ID 与网关公共 task ID 相互替换。生成结果及时下载或转存；素材认证成功不代表最终生成免审，也不保证音色百分之百一致。
+提交成功响应的顶层 `id`、`task_id` 是网关公共任务 ID。保存这个 ID，不要替换为上游原始任务 ID。轮询使用同一用户 Key：
+
+```bash
+curl 'https://api.xybcloud.com/api/v3/contents/generations/tasks/PUBLIC_TASK_ID' \
+  -H "Authorization: Bearer $XYB_API_KEY"
+```
+
+**此查询接口返回网关的 OpenAI Video 格式，不是豆包原生响应格式。** 读取顶层 `status`：`queued`、`in_progress` 表示等待或运行，`completed` 表示成功，`failed` 表示失败。成功视频地址在顶层 `video_url` 或 `url`；不要按原生协议的 `succeeded` 和 `content.video_url` 解析。建议每10秒查询，失败展示错误并停止轮询；查询超时保留任务 ID，稍后继续，不重新提交生成。
+
+可以下载成功响应中的视频地址，也可以使用本站内容代理：
+
+```bash
+curl --fail --location \
+  'https://api.xybcloud.com/v1/videos/PUBLIC_TASK_ID/content' \
+  -H "Authorization: Bearer $XYB_API_KEY" \
+  --output result.mp4
+```
+
+直接访问外部视频地址时不要附带本站 API Key。生成结果及时下载或转存；素材认证成功不代表最终生成免审，也不保证音色百分之百一致。
 
 ## 返回体与错误处理
 
