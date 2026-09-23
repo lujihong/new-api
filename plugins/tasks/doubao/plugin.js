@@ -349,7 +349,16 @@ export function buildSubmitRequest(ctx) {
   for (const key of ["ratio", "seed", "watermark", "generate_audio", "return_last_frame", "camera_fixed", "service_tier", "execution_expires_after"]) {
     if (req[key] !== undefined) body[key] = req[key];
   }
-  if (body.generate_audio === undefined) body.generate_audio = req.video_generate_audio !== undefined ? req.video_generate_audio : metadata.video_generate_audio;
+  if (body.generate_audio === undefined) {
+    if (req.video_generate_audio !== undefined) body.generate_audio = req.video_generate_audio;
+    else if (metadata.video_generate_audio !== undefined) body.generate_audio = metadata.video_generate_audio;
+    else {
+      const sourceModel = String(ctx.model || body.model || "");
+      const isCmeCloudSeedance20 = /^https:\/\/([a-z0-9-]+\.)*cmecloud\.cn(?::443)?(?:\/|$)/i.test(String(ctx.baseUrl || "")) &&
+        (sourceModel === "moma-seedance-2.0" || sourceModel === "nm-moma-seedance-2.0");
+      if (isCmeCloudSeedance20) body.generate_audio = true;
+    }
+  }
   for (const key of ["watermark", "generate_audio", "return_last_frame", "camera_fixed"]) {
     if (body[key] === "false") body[key] = false;
     else if (body[key] === "true") body[key] = true;

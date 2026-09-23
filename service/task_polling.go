@@ -290,9 +290,10 @@ func updateBatchTasks(ctx context.Context, adaptor BatchTaskPollingAdaptor, chan
 			continue
 		}
 		reason := ""
-		if aiccTaskChannel(ch) && !hasAICCTaskSnapshot(task) {
-			reason = "缺少创建时账号来源快照"
-		} else if hasAICCTaskSnapshot(task) {
+		// AICC is a per-request capability, not a property of every task
+		// sent through a channel that also supports asset references. Plain
+		// video tasks have no AICC snapshot and must still be polled.
+		if hasAICCTaskSnapshot(task) {
 			if err := ValidateAICCTaskSource(task, ch); err != nil {
 				reason = err.Error()
 			}
@@ -498,20 +499,6 @@ func updateVideoTasks(ctx context.Context, platform constant.TaskPlatform, chann
 
 const aiccTaskPausePrefix = "AICC任务已暂停："
 
-func aiccTaskChannel(ch *model.Channel) bool {
-	if ch == nil {
-		return false
-	}
-	info := ch.GetOtherInfo()
-	if info["aicc_enabled"] == true {
-		return true
-	}
-	// Legacy AICC used DoubaoVideo with AK configuration. Type 54 alone is
-	// also used by ordinary Doubao channels and must not pause all video tasks.
-	accessKeyID, _ := info["access_key_id"].(string)
-	return ch.Type == constant.ChannelTypeDoubaoVideo && strings.TrimSpace(accessKeyID) != ""
-}
-
 func hasAICCTaskSnapshot(task *model.Task) bool {
 	return task != nil && task.PrivateData.Execution != nil && task.PrivateData.Execution.AICC != nil
 }
@@ -581,9 +568,9 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 		logger.LogError(ctx, fmt.Sprintf("Task %s not found in taskM", taskId))
 		return fmt.Errorf("task %s not found", taskId)
 	}
-	if aiccTaskChannel(ch) && !hasAICCTaskSnapshot(task) {
-		return pauseAICCTask(ctx, task, "缺少创建时账号来源快照")
-	}
+	// Only tasks carrying an AICC dispatch snapshot require the pinned
+	// account and credential validation. Ordinary video tasks may use the
+	// same channel without referencing protected assets.
 	if hasAICCTaskSnapshot(task) {
 		current, err := model.GetChannelById(task.ChannelId, true)
 		if err != nil {

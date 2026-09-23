@@ -693,7 +693,7 @@ func TestRunTaskPollingOnceSeparatesEqualUpstreamIDsAcrossChannels(t *testing.T)
 	require.Equal(t, 3, adaptor.fetchCount(), "ambiguous same-channel tasks must pause, other channel must continue")
 }
 
-func TestAICCTaskPauseDoesNotFetchOrRefundAndRecoveryClearsPause(t *testing.T) {
+func TestOrdinaryVideoTaskOnAICCChannelPollsWithoutSnapshot(t *testing.T) {
 	truncate(t)
 	const channelID = 903
 	seedTaskPollingChannel(t, channelID, true)
@@ -704,27 +704,17 @@ func TestAICCTaskPauseDoesNotFetchOrRefundAndRecoveryClearsPause(t *testing.T) {
 	info["access_key_id"] = "legacy-ak"
 	ch.SetOtherInfo(info)
 	require.NoError(t, model.DB.Save(&ch).Error)
-	task := seedPollingTask(t, channelID, "aicc-missing-snapshot", "aicc-upstream")
+	task := seedPollingTask(t, channelID, "ordinary-video", "ordinary-upstream")
 	task.Quota = 3000
 	require.NoError(t, model.DB.Save(task).Error)
 	adaptor := &taskPollingFetchAdaptor{}
 	require.NoError(t, updateVideoSingleTask(context.Background(), adaptor, &ch, task.GetUpstreamTaskID(), map[string]*model.Task{task.GetUpstreamTaskID(): task}))
-	var paused model.Task
-	require.NoError(t, model.DB.First(&paused, task.ID).Error)
-	assert.Equal(t, 0, adaptor.fetchCount())
-	assert.Equal(t, 0, paused.PrivateData.PollFailures)
-	assert.Equal(t, 3000, paused.Quota)
-	assert.Contains(t, paused.FailReason, aiccTaskPausePrefix)
-
-	ch.SetOtherInfo(map[string]any{})
-	require.NoError(t, model.DB.Save(&ch).Error)
-	require.NoError(t, updateVideoSingleTask(context.Background(), adaptor, &ch, task.GetUpstreamTaskID(), map[string]*model.Task{task.GetUpstreamTaskID(): &paused}))
-	var recovered model.Task
-	require.NoError(t, model.DB.First(&recovered, task.ID).Error)
+	var polled model.Task
+	require.NoError(t, model.DB.First(&polled, task.ID).Error)
 	assert.Equal(t, 1, adaptor.fetchCount())
-	assert.Empty(t, recovered.FailReason)
-	assert.Equal(t, 0, recovered.PrivateData.PollFailures)
-	assert.Equal(t, 3000, recovered.Quota)
+	assert.Empty(t, polled.FailReason)
+	assert.Equal(t, 0, polled.PrivateData.PollFailures)
+	assert.Equal(t, 3000, polled.Quota)
 }
 
 func TestUpdateBatchTasksIgnoresResponsesForPausedTasks(t *testing.T) {
