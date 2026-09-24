@@ -23,6 +23,8 @@ export const meta = {
     "doubao-seedance-2.0-fast",
     "doubao-seedance-2.0-mini",
     "doubao-seedance-2.5",
+    "moma-seedance-2.0",
+    "nm-moma-seedance-2.0",
     "doubao-seedance-1.5-pro",
     "doubao-seedance-1.0-pro",
   ],
