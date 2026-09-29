@@ -102,6 +102,36 @@ func ValidateMetadataValues(values MetadataValues) error {
 	return ValidateModelEndpoints(values.Endpoints)
 }
 
+// NormalizeModelEndpoints keeps endpoint type arrays intact and canonicalizes legacy relative paths.
+func NormalizeModelEndpoints(raw string) (string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return raw, nil
+	}
+	var value any
+	if err := common.UnmarshalJsonStr(raw, &value); err != nil {
+		return "", fmt.Errorf("invalid endpoints: %w", err)
+	}
+	if endpoints, ok := value.(map[string]any); ok {
+		for key, endpoint := range endpoints {
+			switch details := endpoint.(type) {
+			case string:
+				if strings.TrimSpace(details) != "" && !strings.HasPrefix(details, "/") {
+					endpoints[key] = "/" + strings.TrimSpace(details)
+				}
+			case map[string]any:
+				if path, ok := details["path"].(string); ok && strings.TrimSpace(path) != "" && !strings.HasPrefix(strings.TrimSpace(path), "/") {
+					details["path"] = "/" + strings.TrimSpace(path)
+				}
+			}
+		}
+	}
+	encoded, err := common.Marshal(value)
+	if err != nil {
+		return "", fmt.Errorf("invalid endpoints: %w", err)
+	}
+	return string(encoded), nil
+}
+
 // ValidateModelEndpoints accepts the existing map form (custom paths) and
 // type-array form (declared protocols), but never arbitrary JSON scalars.
 func ValidateModelEndpoints(raw string) error {
@@ -126,13 +156,14 @@ func ValidateModelEndpoints(raw string) error {
 			}
 			switch details := endpoint.(type) {
 			case string:
-				if !strings.HasPrefix(details, "/") {
-					return errors.New("endpoint paths must start with /")
+				if strings.TrimSpace(details) == "" {
+					return errors.New("endpoint path must not be empty")
 				}
+				// Existing catalog rows may contain a legacy relative path; normalize it when validating metadata edits.
 			case map[string]any:
 				path, _ := details["path"].(string)
-				if !strings.HasPrefix(path, "/") {
-					return errors.New("endpoint paths must start with /")
+				if strings.TrimSpace(path) == "" {
+					return errors.New("endpoint path must not be empty")
 				}
 				if method, exists := details["method"]; exists {
 					switch method {
@@ -156,13 +187,19 @@ func ApplyMetadataSync(updates []MetadataSyncUpdate, upstreamVendors map[string]
 		return nil, errors.New("select metadata changes before applying")
 	}
 	seen := make(map[string]bool)
-	for _, update := range updates {
+	for i := range updates {
+		update := &updates[i]
 		if seen[update.ModelName] || strings.TrimSpace(update.ModelName) == "" {
 			return nil, errors.New("invalid or duplicate model selection")
 		}
 		seen[update.ModelName] = true
 		if update.RecordVersion == "" {
 			return nil, ErrMetadataSyncConflict
+		}
+		if normalized, err := NormalizeModelEndpoints(update.Values.Endpoints); err != nil {
+			return nil, err
+		} else {
+			update.Values.Endpoints = normalized
 		}
 		if err := ValidateMetadataValues(update.Values); err != nil {
 			return nil, err

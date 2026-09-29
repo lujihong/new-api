@@ -836,8 +836,11 @@ function DiscountEditor(props: {
         handleConfirm={() => {
           if (busy || operation.current || !isCurrentSession()) return
           if (deleting) {
-            setRules(removeDiscountRule(rules, deleting))
+            const nextRules = removeDiscountRule(rules, deleting)
+            const value = JSON.stringify(nextRules)
+            setRules(nextRules)
             setTablePage(Math.min(visiblePage, Math.max(1, Math.ceil((filteredRows.length - 1) / 25))))
+            save.mutate({ value, baseline: saved })
           }
           setDeleting(null)
         }}
