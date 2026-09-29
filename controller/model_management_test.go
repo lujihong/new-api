@@ -932,7 +932,7 @@ export function parseTaskResult() { return {}; }
 				var reloaded model.Model
 				require.NoError(t, db.First(&reloaded, exact.Id).Error)
 				enrichModels([]*model.Model{&reloaded})
-				assert.Equal(t, exact.Endpoints, reloaded.Endpoints)
+				assert.JSONEq(t, exact.Endpoints, reloaded.Endpoints)
 				assert.Empty(t, reloaded.BoundChannels)
 				prices, err := model.GetModelPricingSnapshot([]string{"matrix-hidden-unpriced", "matrix-renamed"})
 				require.NoError(t, err)
