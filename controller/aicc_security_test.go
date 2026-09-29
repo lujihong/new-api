@@ -201,6 +201,39 @@ func TestAICCListsAreScopedAndAnnotatedBySelectedBinding(t *testing.T) {
 	require.Equal(t, 2, calls)
 }
 
+func TestAICCListsDoNotReuseSameAccountGroupsAcrossChannels(t *testing.T) {
+	db := setupAICCTestDB(t)
+	binding := aiccTestBinding(t)
+	other := binding
+	other.ChannelID = 2
+	var channel model.Channel
+	require.NoError(t, db.First(&channel, 1).Error)
+	channel.Id = 2
+	channel.Name = "second channel"
+	require.NoError(t, db.Create(&channel).Error)
+	require.NoError(t, db.Create(&model.Ability{Group: "default", Model: "aicc-test-model", ChannelId: 2, Enabled: true}).Error)
+	require.NoError(t, model.RecordBoundAICCAssetGroupOwnership(101, "channel-one", "AIGC", binding))
+	require.NoError(t, model.RecordBoundAICCAssetGroupOwnership(101, "channel-two", "AIGC", other))
+	groups, err := aiccOwnedGroupIDs(101, binding)
+	require.NoError(t, err)
+	require.Equal(t, map[string]struct{}{"channel-one": {}}, groups)
+}
+
+func TestAICCFilteredListTotalNeverLeaksUpstreamForeignCount(t *testing.T) {
+	result := aiccFilterPage(map[string]any{
+		"body": map[string]any{
+			"data": []any{
+				map[string]any{"groupId": "owned"},
+				map[string]any{"groupId": "foreign"},
+			},
+			"total": float64(99),
+		},
+	}, map[string]struct{}{"owned": {}}, "groupId")
+	body := result["body"].(map[string]any)
+	require.Equal(t, 1, body["total"])
+	require.NotEqual(t, float64(99), body["total"])
+}
+
 func TestAICCFilteredPageNeverLeaksAlternateFields(t *testing.T) {
 	for _, raw := range []map[string]any{
 		{"body": map[string]any{"list": []any{map[string]any{"groupId": "foreign-secret"}}}},

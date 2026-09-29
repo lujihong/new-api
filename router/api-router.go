@@ -324,9 +324,13 @@ func SetApiRouter(router *gin.Engine) {
 		logRoute.GET("/channel_affinity_usage_cache", middleware.AdminAuth(), controller.GetChannelAffinityUsageCacheStats)
 		logRoute.GET("/search", middleware.AdminAuth(), controller.SearchAllLogs)
 		logRoute.GET("/self", middleware.UserAuth(), controller.GetUserLogs)
-		logRoute.GET("/self/search", middleware.UserAuth(), middleware.SearchRateLimit(), controller.SearchUserLogs)
+			logRoute.GET("/self/search", middleware.UserAuth(), middleware.SearchRateLimit(), controller.SearchUserLogs)
+			logRoute.GET("/export", middleware.UserAuth(), controller.GetLogsExport)
+			logRoute.GET("/task/export", middleware.UserAuth(), controller.GetTaskLogsExport)
+			logRoute.GET("/drawing/export", middleware.UserAuth(), controller.GetDrawingLogsExport)
+			logRoute.GET("/token/page", middleware.TokenAuthReadOnly(), controller.GetTokenLogPage)
 
-		systemTaskRoute := apiRouter.Group("/system-task")
+			systemTaskRoute := apiRouter.Group("/system-task")
 		systemTaskRoute.Use(middleware.RootAuth())
 		{
 			systemTaskRoute.POST("/log-cleanup", controller.CreateLogCleanupSystemTask)

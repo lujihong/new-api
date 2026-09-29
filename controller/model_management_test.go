@@ -1074,6 +1074,92 @@ func TestMetadataSyncLocaleAndEndpointValidation(t *testing.T) {
 	}
 }
 
+func TestMetadataEndpointNormalizationContract(t *testing.T) {
+	for _, tc := range []struct{ name, input, want string }{
+		{"string legacy path", `{"openai":"v1/chat/completions"}`, `{"openai":"/v1/chat/completions"}`},
+		{"object legacy path", `{"openai":{"path":"v1/chat/completions","method":"POST"}}`, `{"openai":{"path":"/v1/chat/completions","method":"POST"}}`},
+		{"frontend rerank template", `{"jina-rerank":{"path":"rerank","method":"POST"}}`, `{"jina-rerank":{"path":"/rerank","method":"POST"}}`},
+		{"gemini template", `{"gemini":"v1beta/models/{model}:generateContent"}`, `{"gemini":"/v1beta/models/{model}:generateContent"}`},
+		{"custom rooted path", `{"openai":{"path":"/custom/chat","method":"GET"}}`, `{"openai":{"path":"/custom/chat","method":"GET"}}`},
+		{"known type array", `["openai","anthropic"]`, `["openai","anthropic"]`},
+		{"empty map", `{}`, `{}`},
+		{"empty array", `[]`, `[]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			normalized, err := model.NormalizeModelEndpoints(tc.input)
+			require.NoError(t, err)
+			assert.JSONEq(t, tc.want, normalized)
+			assert.NoError(t, model.ValidateModelEndpoints(normalized))
+			again, err := model.NormalizeModelEndpoints(normalized)
+			require.NoError(t, err)
+			assert.Equal(t, normalized, again)
+		})
+	}
+	for _, raw := range []string{
+		`null`, `1`, `"openai"`, `["unknown"]`, `["https://example.invalid"]`, `[1]`,
+		`{"unknown":"/v1/chat/completions"}`, `{"openai":false}`,
+		`{"openai":"https://example.invalid/v1/chat/completions"}`,
+		`{"openai":{"path":"http://example.invalid/path"}}`,
+		`{"openai":"//example.invalid/path"}`, `{"openai":"/https://example.invalid/path"}`,
+		`{"openai":"javascript:alert(1)"}`, `{"openai":"ftp://example.invalid/path"}`,
+		`{"openai":"/v1/chat completions"}`, `{"openai":"/v1/chat\ncompletions"}`,
+		`{"openai":"/\\example.invalid/path"}`, `{"openai":"/%2fexample.invalid/path"}`,
+		`{"openai":{"path":"/v1/chat/completions","method":"TRACE"}}`,
+		`{"openai":{"method":"POST"}}`, `{"openai":{"path":1}}`,
+	} {
+		t.Run(raw, func(t *testing.T) {
+			assert.Error(t, model.ValidateModelEndpoints(raw))
+			_, err := model.NormalizeModelEndpoints(raw)
+			assert.Error(t, err, "normalization must not turn invalid input into a path")
+		})
+	}
+	assert.Error(t, model.ValidateModelEndpoints(`{"openai":"v1/chat/completions"}`), "validation stays strict; compatibility belongs in normalization")
+	assert.NoError(t, model.ValidateModelEndpoints(`{"openai":"/v1/arbitrary"}`), "rooted custom HTTP paths remain supported")
+}
+
+func TestOrdinaryModelMetadataEndpointSave(t *testing.T) {
+	for _, dialect := range []struct{ kind, env string }{{"sqlite", ""}, {"mysql", "TEST_MYSQL_DSN"}, {"postgres", "TEST_POSTGRES_DSN"}} {
+		t.Run(dialect.kind, func(t *testing.T) {
+			if dialect.env != "" && os.Getenv(dialect.env) == "" {
+				t.Skip("set " + dialect.env)
+			}
+			db := modelManagementDB(t, dialect.kind, os.Getenv(dialect.env))
+			legacy := `{"openai":{"path":"v1/chat/completions","method":"POST"}}`
+			want := `{"openai":{"path":"/v1/chat/completions","method":"POST"}}`
+			metadata := model.Model{ModelName: "legacy-endpoints", Description: "before", Endpoints: legacy, Status: 1}
+			require.NoError(t, db.Create(&metadata).Error)
+			metadata.Description = "ordinary edit"
+			var result struct {
+				Success bool
+				Message string
+				Data    model.Model
+			}
+			modelManagementRequest(t, UpdateModelMeta, http.MethodPut, "/api/models/", metadata, &result)
+			require.True(t, result.Success, result.Message)
+			assert.JSONEq(t, want, result.Data.Endpoints)
+			var persisted model.Model
+			require.NoError(t, db.First(&persisted, metadata.Id).Error)
+			assert.Equal(t, "ordinary edit", persisted.Description)
+			assert.JSONEq(t, want, persisted.Endpoints)
+			for _, invalid := range []string{`{"openai":"https://example.invalid/path"}`, `["unknown"]`} {
+				metadata.Endpoints, metadata.Description = invalid, "must not persist"
+				modelManagementRequest(t, UpdateModelMeta, http.MethodPut, "/api/models/", metadata, &result)
+				assert.False(t, result.Success)
+				require.NoError(t, db.First(&persisted, metadata.Id).Error)
+				assert.Equal(t, "ordinary edit", persisted.Description)
+				assert.JSONEq(t, want, persisted.Endpoints)
+			}
+			metadata.Id, metadata.ModelName, metadata.Endpoints = 0, "created-endpoints", legacy
+			modelManagementRequest(t, CreateModelMeta, http.MethodPost, "/api/models/", metadata, &result)
+			require.True(t, result.Success, result.Message)
+			assert.JSONEq(t, want, result.Data.Endpoints)
+			var created model.Model
+			require.NoError(t, db.First(&created, result.Data.Id).Error)
+			assert.JSONEq(t, want, created.Endpoints)
+		})
+	}
+}
+
 func TestVendorManagementDatabaseMatrix(t *testing.T) {
 	for _, dialect := range []struct{ kind, env string }{{"sqlite", ""}, {"mysql", "TEST_MYSQL_DSN"}, {"postgres", "TEST_POSTGRES_DSN"}} {
 		t.Run(dialect.kind, func(t *testing.T) {

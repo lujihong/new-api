@@ -327,6 +327,9 @@ func aiccFilterPage(data map[string]any, allowed map[string]struct{}, key string
 		}
 	}
 	output["data"], output["total"] = filtered, len(filtered)
+	// Keep upstream pagination only when every returned item passed the local
+	// ownership filter. A mixed page makes the remote total untrustworthy and
+	// could expose counts beyond the caller's scope.
 	if len(filtered) == len(items) {
 		if total, valid := body["total"].(float64); valid && total >= float64(len(filtered)) {
 			output["total"] = total

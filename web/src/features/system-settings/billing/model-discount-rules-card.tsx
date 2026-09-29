@@ -255,7 +255,28 @@ function DiscountEditor(props: {
     onError: (failure: Error) => { if (isCurrentSession()) setError(failure.message) },
     onSettled: () => { operation.current = false },
   })
-  const busy = save.isPending || props.refreshing
+  const removeSaved = useMutation({
+    mutationFn: async ({ value, baseline }: { value: string; baseline: string; previousRules: ModelDiscountRules }) => {
+      const response = await updateSystemOption({ key: 'ModelDiscountRules', value, expected_value: baseline })
+      if (!response.success) throw new Error(response.message || t('Failed to update setting'))
+      return value
+    },
+    onSuccess: (value) => {
+      if (!isCurrentSession()) return
+      setSaved(value)
+      queryClient.setQueryData(['model-discount-rules', userId, sid], JSON.parse(value))
+      void queryClient.invalidateQueries({ queryKey: ['pricing'] })
+      void queryClient.invalidateQueries({ queryKey: ['system-options'] })
+      toast.success(t('Setting updated successfully'))
+    },
+    onError: (failure: Error, variables) => {
+      if (!isCurrentSession()) return
+      setRules(variables.previousRules)
+      setError(failure.message)
+    },
+    onSettled: () => { operation.current = false },
+  })
+  const busy = save.isPending || removeSaved.isPending || props.refreshing
 
   async function reloadRules() {
     if (operation.current || busy || props.fetching || freeRule || deleting) return
@@ -716,7 +737,7 @@ function DiscountEditor(props: {
                           type='button'
                           variant='ghost'
                           size='sm'
-                          disabled={busy || formDirty || !!freeRule}
+                          disabled={busy || !!freeRule}
                           onClick={() => { if (!busy && !operation.current) setDeleting(row) }}
                           className='h-7 px-2 text-xs text-stone-400 hover:text-destructive hover:bg-destructive/10'
                         >
@@ -834,15 +855,20 @@ function DiscountEditor(props: {
         destructive
         disabled={busy}
         handleConfirm={() => {
-          if (busy || operation.current || !isCurrentSession()) return
-          if (deleting) {
-            const nextRules = removeDiscountRule(rules, deleting)
-            const value = JSON.stringify(nextRules)
-            setRules(nextRules)
-            setTablePage(Math.min(visiblePage, Math.max(1, Math.ceil((filteredRows.length - 1) / 25))))
-            save.mutate({ value, baseline: saved })
-          }
+          if (busy || operation.current || !isCurrentSession() || !deleting) return
+          const target = deleting
+          const previousRules = rules
+          const nextRules = removeDiscountRule(previousRules, target)
+          const savedRules = removeDiscountRule(JSON.parse(saved) as ModelDiscountRules, target)
+          operation.current = true
+          setRules(nextRules)
+          setTablePage(Math.min(visiblePage, Math.max(1, Math.ceil((filteredRows.length - 1) / 25))))
           setDeleting(null)
+          removeSaved.mutate({
+            value: JSON.stringify(savedRules),
+            baseline: saved,
+            previousRules,
+          })
         }}
       />
     </div>

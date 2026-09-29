@@ -26,7 +26,7 @@ func setupAICCBindingDB(t *testing.T) *gorm.DB {
 }
 
 func TestAICCBindingOwnershipBoundaries(t *testing.T) {
-	setupAICCBindingDB(t)
+	db := setupAICCBindingDB(t)
 	a := AICCBinding{ChannelID: 11, AICCAccountID: strings.Repeat("a", 64)}
 	sameAccount := AICCBinding{ChannelID: 12, AICCAccountID: a.AICCAccountID}
 	other := AICCBinding{ChannelID: 21, AICCAccountID: strings.Repeat("b", 64)}
@@ -70,14 +70,19 @@ func TestAICCBindingOwnershipBoundaries(t *testing.T) {
 	require.Error(t, RecordBoundAICCAssetOwnership(202, "asset", "foreign", other))
 	require.Error(t, RecordBoundAICCAssetOwnership(202, "new", "group", a))
 	require.Error(t, RecordBoundAICCAssetOwnership(101, "new", "group", other))
+	// A same-account binding on another channel cannot satisfy an asset's parent group.
+	require.NoError(t, db.Create(&AICCAssetGroupOwnership{UserID: 101, GroupID: "channel-mismatch", GroupType: "AIGC", ChannelID: sameAccount.ChannelID, AICCAccountID: sameAccount.AICCAccountID}).Error)
+	require.NoError(t, db.Create(&AICCAssetOwnership{UserID: 101, AssetID: "channel-mismatch-asset", GroupID: "channel-mismatch", ChannelID: a.ChannelID, AICCAccountID: a.AICCAccountID}).Error)
+	_, err = GetOwnedAICCAssetBinding(101, "channel-mismatch-asset")
+	require.Error(t, err)
 	require.ErrorIs(t, RecordBoundAICCAssetOwnership(101, "new", "missing", a), gorm.ErrRecordNotFound)
 	// Different channels configured for the same account can own different resources.
-	require.NoError(t, RecordBoundAICCAssetOwnership(101, "asset-two", "group", sameAccount))
 	require.NoError(t, RecordBoundAICCAssetGroupOwnership(101, "group-two", "AIGC", sameAccount))
+	require.NoError(t, RecordBoundAICCAssetOwnership(101, "asset-two", "group-two", sameAccount))
 	require.NoError(t, RecordBoundAICCAssetGroupOwnership(101, "other-account", "AIGC", other))
 	ids, err := UserOwnedAICCGroupIDsForBinding(101, sameAccount)
 	require.NoError(t, err)
-	require.Equal(t, map[string]struct{}{"group": {}, "group-two": {}}, ids)
+	require.Equal(t, map[string]struct{}{"channel-mismatch": {}, "group-two": {}}, ids)
 	_, err = UserOwnedAICCGroupIDsForBinding(0, a)
 	require.Error(t, err)
 }

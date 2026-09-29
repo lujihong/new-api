@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -102,7 +104,9 @@ func ValidateMetadataValues(values MetadataValues) error {
 	return ValidateModelEndpoints(values.Endpoints)
 }
 
-// NormalizeModelEndpoints keeps endpoint type arrays intact and canonicalizes legacy relative paths.
+// NormalizeModelEndpoints canonicalizes the relative paths used by legacy metadata
+// rows. It validates the result before returning it, so ordinary edits and sync
+// apply the same endpoint contract.
 func NormalizeModelEndpoints(raw string) (string, error) {
 	if strings.TrimSpace(raw) == "" {
 		return raw, nil
@@ -111,29 +115,95 @@ func NormalizeModelEndpoints(raw string) (string, error) {
 	if err := common.UnmarshalJsonStr(raw, &value); err != nil {
 		return "", fmt.Errorf("invalid endpoints: %w", err)
 	}
-	if endpoints, ok := value.(map[string]any); ok {
-		for key, endpoint := range endpoints {
-			switch details := endpoint.(type) {
-			case string:
-				if strings.TrimSpace(details) != "" && !strings.HasPrefix(details, "/") {
-					endpoints[key] = "/" + strings.TrimSpace(details)
-				}
-			case map[string]any:
-				if path, ok := details["path"].(string); ok && strings.TrimSpace(path) != "" && !strings.HasPrefix(strings.TrimSpace(path), "/") {
-					details["path"] = "/" + strings.TrimSpace(path)
-				}
+	switch endpoints := value.(type) {
+	case []any:
+		for _, endpoint := range endpoints {
+			if !isKnownEndpointType(endpoint) {
+				return "", errors.New("endpoint types must be known endpoint names")
 			}
 		}
+	case map[string]any:
+		for key, endpoint := range endpoints {
+			if !isKnownEndpointType(key) {
+				return "", fmt.Errorf("unknown endpoint type: %s", key)
+			}
+			switch details := endpoint.(type) {
+			case string:
+				normalized, err := normalizeEndpointPath(details)
+				if err != nil {
+					return "", err
+				}
+				endpoints[key] = normalized
+			case map[string]any:
+				path, ok := details["path"].(string)
+				if !ok {
+					return "", errors.New("endpoint path must be a string")
+				}
+				normalized, err := normalizeEndpointPath(path)
+				if err != nil {
+					return "", err
+				}
+				details["path"] = normalized
+			default:
+				return "", errors.New("endpoint configuration must be a path or object")
+			}
+		}
+	default:
+		return "", errors.New("endpoints must be a JSON object or array")
 	}
 	encoded, err := common.Marshal(value)
 	if err != nil {
 		return "", fmt.Errorf("invalid endpoints: %w", err)
 	}
-	return string(encoded), nil
+	return string(encoded), ValidateModelEndpoints(string(encoded))
 }
 
-// ValidateModelEndpoints accepts the existing map form (custom paths) and
-// type-array form (declared protocols), but never arbitrary JSON scalars.
+func isKnownEndpointType(value any) bool {
+	text, ok := value.(string)
+	if !ok || strings.TrimSpace(text) != text {
+		return false
+	}
+	switch constant.EndpointType(text) {
+	case constant.EndpointTypeOpenAI, constant.EndpointTypeOpenAIResponse,
+		constant.EndpointTypeOpenAIResponseCompact, constant.EndpointTypeOpenAIAlphaSearch,
+		constant.EndpointTypeAnthropic, constant.EndpointTypeGemini, constant.EndpointTypeJinaRerank,
+		constant.EndpointTypeImageGeneration, constant.EndpointTypeEmbeddings, constant.EndpointTypeOpenAIVideo:
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeEndpointPath(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", errors.New("endpoint path must not be empty")
+	}
+	lowerPath := strings.ToLower(path)
+	if strings.HasPrefix(lowerPath, "javascript:") || strings.HasPrefix(lowerPath, "data:") || strings.HasPrefix(lowerPath, "ftp:") {
+		return "", errors.New("endpoint path must be a local HTTP path")
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	if err := validateEndpointPath(path); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func validateEndpointPath(path string) error {
+	if path == "" || !strings.HasPrefix(path, "/") || strings.HasPrefix(path, "//") {
+		return errors.New("endpoint paths must be HTTP paths starting with /")
+	}
+	if strings.ContainsAny(path, `\\%?#`) || strings.Contains(path, "://") || strings.ContainsFunc(path, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) {
+		return errors.New("endpoint path must be a local HTTP path")
+	}
+	return nil
+}
+
+// ValidateModelEndpoints accepts known endpoint types in the existing map form
+// and the declared endpoint-type array form. Paths are strict HTTP paths.
 func ValidateModelEndpoints(raw string) error {
 	if strings.TrimSpace(raw) == "" {
 		return nil
@@ -145,25 +215,27 @@ func ValidateModelEndpoints(raw string) error {
 	switch endpoints := value.(type) {
 	case []any:
 		for _, endpoint := range endpoints {
-			if text, ok := endpoint.(string); !ok || strings.TrimSpace(text) == "" {
-				return errors.New("endpoint types must be non-empty strings")
+			if !isKnownEndpointType(endpoint) {
+				return errors.New("endpoint types must be known endpoint names")
 			}
 		}
 	case map[string]any:
 		for key, endpoint := range endpoints {
-			if strings.TrimSpace(key) == "" {
-				return errors.New("endpoint type is required")
+			if !isKnownEndpointType(key) {
+				return fmt.Errorf("unknown endpoint type: %s", key)
 			}
 			switch details := endpoint.(type) {
 			case string:
-				if strings.TrimSpace(details) == "" {
-					return errors.New("endpoint path must not be empty")
+				if err := validateEndpointPath(details); err != nil {
+					return err
 				}
-				// Existing catalog rows may contain a legacy relative path; normalize it when validating metadata edits.
 			case map[string]any:
-				path, _ := details["path"].(string)
-				if strings.TrimSpace(path) == "" {
-					return errors.New("endpoint path must not be empty")
+				path, ok := details["path"].(string)
+				if !ok {
+					return errors.New("endpoint path must be a string")
+				}
+				if err := validateEndpointPath(path); err != nil {
+					return err
 				}
 				if method, exists := details["method"]; exists {
 					switch method {
