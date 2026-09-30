@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -85,9 +86,16 @@ func GetLogsExport(c *gin.Context) {
 	}
 	rows := make([][]any, 0, len(logs))
 	for _, log := range logs {
-		rows = append(rows, []any{log.Id, log.UserId, log.Username, log.CreatedAt, common.BeijingISOTime(log.CreatedAt), log.Type, log.TokenName, log.ModelName, log.Quota, log.PromptTokens, log.CompletionTokens, log.UseTime, log.IsStream, log.ChannelId, log.Group, log.RequestId, log.UpstreamRequestId, log.Content, log.Other})
+		taskID := ""
+		var other map[string]any
+		if json.Unmarshal([]byte(log.Other), &other) == nil {
+			if value, ok := other["task_id"].(string); ok {
+				taskID = value
+			}
+		}
+		rows = append(rows, []any{log.Id, log.UserId, log.Username, log.CreatedAt, common.BeijingISOTime(log.CreatedAt), log.Type, log.TokenName, log.ModelName, taskID, log.Quota, log.PromptTokens, log.CompletionTokens, log.UseTime, log.IsStream, log.ChannelId, log.Group, log.RequestId, log.UpstreamRequestId, log.Content, log.Other})
 	}
-	data, err := common.BuildXLSX("API usage logs", start, end, total, common.XLSXSheet{Name: "日志", Headers: []string{"ID", "User ID", "Username", "Created At (Unix)", "Created At (Beijing)", "Type", "Token Name", "Model Name", "Quota", "Prompt Tokens", "Completion Tokens", "Use Time", "Stream", "Channel ID", "Group", "Request ID", "Upstream Request ID", "Content", "Other"}, Rows: rows})
+	data, err := common.BuildXLSX("API usage logs", start, end, total, common.XLSXSheet{Name: "日志", Headers: []string{"ID", "User ID", "Username", "Created At (Unix)", "Created At (Beijing)", "Type", "Token Name", "Model Name", "Task ID", "Quota", "Prompt Tokens", "Completion Tokens", "Use Time", "Stream", "Channel ID", "Group", "Request ID", "Upstream Request ID", "Content", "Other"}, Rows: rows})
 	if err != nil {
 		common.ApiError(c, err)
 		return

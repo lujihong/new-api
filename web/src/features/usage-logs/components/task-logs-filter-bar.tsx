@@ -16,69 +16,73 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useQueryClient, useIsFetching } from '@tanstack/react-query'
-import { useNavigate, getRouteApi } from '@tanstack/react-router'
-import { type Table } from '@tanstack/react-table'
-import { useState, useEffect, useCallback } from 'react'
-import { useTranslation } from 'react-i18next'
+import { useQueryClient, useIsFetching } from "@tanstack/react-query";
+import { useNavigate, getRouteApi } from "@tanstack/react-router";
+import { type Table } from "@tanstack/react-table";
+import { useState, useEffect, useCallback } from "react";
+import { useTranslation } from "react-i18next";
+import { toast } from "sonner";
 
-import { buildSearchParams } from '../lib/filter'
-import { getDefaultTimeRange } from '../lib/utils'
-import type { DrawingLogFilters, LogCategory, TaskLogFilters } from '../types'
-import { CompactDateTimeRangePicker } from './compact-date-time-range-picker'
+import { Button } from "@/components/ui/button";
+
+import { buildSearchParams } from "../lib/filter";
+import { downloadUsageLogsExport } from "../api";
+import { getDefaultTimeRange } from "../lib/utils";
+import type { DrawingLogFilters, LogCategory, TaskLogFilters } from "../types";
+import { CompactDateTimeRangePicker } from "./compact-date-time-range-picker";
 import {
   LogsFilterField,
   LogsFilterInput,
   LogsFilterToolbar,
-} from './logs-filter-toolbar'
-import { useLogsViewScope } from './usage-logs-provider'
+} from "./logs-filter-toolbar";
+import { useLogsViewScope } from "./usage-logs-provider";
 
-const route = getRouteApi('/_authenticated/usage-logs/$section')
+const route = getRouteApi("/_authenticated/usage-logs/$section");
 
-type TaskLikeLogCategory = Extract<LogCategory, 'drawing' | 'task'>
-type TaskLogsFilters = DrawingLogFilters | TaskLogFilters
+type TaskLikeLogCategory = Extract<LogCategory, "drawing" | "task">;
+type TaskLogsFilters = DrawingLogFilters | TaskLogFilters;
 
 interface TaskLogsFilterBarProps<TData> {
-  table: Table<TData>
-  logCategory: TaskLikeLogCategory
+  table: Table<TData>;
+  logCategory: TaskLikeLogCategory;
 }
 
 function getFilterValue(
   filters: TaskLogsFilters,
-  logCategory: TaskLikeLogCategory
+  logCategory: TaskLikeLogCategory,
 ): string {
-  if (logCategory === 'drawing') {
-    return (filters as DrawingLogFilters).mjId || ''
+  if (logCategory === "drawing") {
+    return (filters as DrawingLogFilters).mjId || "";
   }
-  return (filters as TaskLogFilters).taskId || ''
+  return (filters as TaskLogFilters).taskId || "";
 }
 
 function setFilterValue(
   filters: TaskLogsFilters,
   logCategory: TaskLikeLogCategory,
-  value: string
+  value: string,
 ): TaskLogsFilters {
-  if (logCategory === 'drawing') {
-    return { ...filters, mjId: value }
+  if (logCategory === "drawing") {
+    return { ...filters, mjId: value };
   }
-  return { ...filters, taskId: value }
+  return { ...filters, taskId: value };
 }
 
 export function TaskLogsFilterBar<TData>(props: TaskLogsFilterBarProps<TData>) {
-  const { t } = useTranslation()
-  const navigate = useNavigate()
-  const queryClient = useQueryClient()
-  const searchParams = route.useSearch()
-  const { isAdminView: isAdmin } = useLogsViewScope()
-  const fetchingLogs = useIsFetching({ queryKey: ['logs'] })
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const searchParams = route.useSearch();
+  const { isAdminView: isAdmin } = useLogsViewScope();
+  const fetchingLogs = useIsFetching({ queryKey: ["logs"] });
 
   const [filters, setFilters] = useState<TaskLogsFilters>(() => {
-    const { start, end } = getDefaultTimeRange()
-    return { startTime: start, endTime: end }
-  })
+    const { start, end } = getDefaultTimeRange();
+    return { startTime: start, endTime: end };
+  });
 
   useEffect(() => {
-    const { start, end } = getDefaultTimeRange()
+    const { start, end } = getDefaultTimeRange();
     const baseFilters = {
       startTime: searchParams.startTime
         ? new Date(searchParams.startTime)
@@ -87,9 +91,9 @@ export function TaskLogsFilterBar<TData>(props: TaskLogsFilterBarProps<TData>) {
       ...(searchParams.channel
         ? { channel: String(searchParams.channel) }
         : {}),
-    }
+    };
     const next: TaskLogsFilters =
-      props.logCategory === 'drawing'
+      props.logCategory === "drawing"
         ? {
             ...baseFilters,
             ...(searchParams.filter ? { mjId: searchParams.filter } : {}),
@@ -97,107 +101,118 @@ export function TaskLogsFilterBar<TData>(props: TaskLogsFilterBarProps<TData>) {
         : {
             ...baseFilters,
             ...(searchParams.filter ? { taskId: searchParams.filter } : {}),
-          }
+          };
 
-    setFilters(next)
+    setFilters(next);
   }, [
     props.logCategory,
     searchParams.startTime,
     searchParams.endTime,
     searchParams.channel,
     searchParams.filter,
-  ])
+  ]);
 
   const handleChange = useCallback(
     (field: keyof TaskLogsFilters, value: Date | string | undefined) => {
-      setFilters((prev) => ({ ...prev, [field]: value }))
+      setFilters((prev) => ({ ...prev, [field]: value }));
     },
-    []
-  )
+    [],
+  );
 
   const handleApply = useCallback(() => {
-    const filterParams = buildSearchParams(filters, props.logCategory)
+    const filterParams = buildSearchParams(filters, props.logCategory);
     navigate({
-      to: '/usage-logs/$section',
+      to: "/usage-logs/$section",
       params: { section: props.logCategory },
       search: {
         ...filterParams,
         page: 1,
       },
-    })
-    queryClient.invalidateQueries({ queryKey: ['logs'] })
-  }, [filters, navigate, props.logCategory, queryClient])
+    });
+    queryClient.invalidateQueries({ queryKey: ["logs"] });
+  }, [filters, navigate, props.logCategory, queryClient]);
 
   const handleReset = useCallback(() => {
-    const { start, end } = getDefaultTimeRange()
-    const resetFilters: TaskLogsFilters = { startTime: start, endTime: end }
-    setFilters(resetFilters)
+    const { start, end } = getDefaultTimeRange();
+    const resetFilters: TaskLogsFilters = { startTime: start, endTime: end };
+    setFilters(resetFilters);
 
     navigate({
-      to: '/usage-logs/$section',
+      to: "/usage-logs/$section",
       params: { section: props.logCategory },
       search: {
         page: 1,
         startTime: start.getTime(),
         endTime: end.getTime(),
       },
-    })
-    queryClient.invalidateQueries({ queryKey: ['logs'] })
-  }, [navigate, props.logCategory, queryClient])
+    });
+    queryClient.invalidateQueries({ queryKey: ["logs"] });
+  }, [navigate, props.logCategory, queryClient]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
-      if (e.key === 'Enter') handleApply()
+      if (e.key === "Enter") handleApply();
     },
-    [handleApply]
-  )
+    [handleApply],
+  );
 
   const handleFilterChange = useCallback(
     (value: string) => {
-      setFilters((prev) => setFilterValue(prev, props.logCategory, value))
+      setFilters((prev) => setFilterValue(prev, props.logCategory, value));
     },
-    [props.logCategory]
-  )
+    [props.logCategory],
+  );
 
-  const filterValue = getFilterValue(filters, props.logCategory)
+  const filterValue = getFilterValue(filters, props.logCategory);
   const placeholder =
-    props.logCategory === 'drawing'
-      ? t('Filter by MjProxy task ID')
-      : t('Filter by task ID')
-  const hasAdditionalFilters = !!filterValue || !!filters.channel
+    props.logCategory === "drawing"
+      ? t("Filter by MjProxy task ID")
+      : t("Filter by task ID");
+  const hasAdditionalFilters = !!filterValue || !!filters.channel;
+  const handleExport = useCallback(async () => {
+    try {
+      const params = buildSearchParams(filters, props.logCategory);
+      await downloadUsageLogsExport(props.logCategory, params);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "导出使用日志失败";
+      toast.error(message);
+    }
+  }, [filters, props.logCategory]);
+
   const dateRangeFilter = (
     <LogsFilterField wide>
       <CompactDateTimeRangePicker
         start={filters.startTime}
         end={filters.endTime}
         onChange={({ start, end }) => {
-          handleChange('startTime', start)
-          handleChange('endTime', end)
+          handleChange("startTime", start);
+          handleChange("endTime", end);
         }}
       />
     </LogsFilterField>
-  )
+  );
   const taskIdFilter = (
     <LogsFilterField>
       <LogsFilterInput
-        aria-label={t('Task ID')}
+        aria-label={t("Task ID")}
         placeholder={placeholder}
         value={filterValue}
         onChange={(e) => handleFilterChange(e.target.value)}
         onKeyDown={handleKeyDown}
       />
     </LogsFilterField>
-  )
+  );
   const channelFilter = isAdmin ? (
     <LogsFilterField>
       <LogsFilterInput
-        placeholder={t('Channel ID')}
-        value={filters.channel || ''}
-        onChange={(e) => handleChange('channel', e.target.value)}
+        placeholder={t("Channel ID")}
+        value={filters.channel || ""}
+        onChange={(e) => handleChange("channel", e.target.value)}
         onKeyDown={handleKeyDown}
       />
     </LogsFilterField>
-  ) : null
+  ) : null;
 
   return (
     <LogsFilterToolbar
@@ -221,6 +236,16 @@ export function TaskLogsFilterBar<TData>(props: TaskLogsFilterBarProps<TData>) {
       onSearch={handleApply}
       searchLoading={fetchingLogs > 0}
       onReset={handleReset}
+      actionEnd={
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => void handleExport()}
+        >
+          导出 Excel
+        </Button>
+      }
     />
-  )
+  );
 }
