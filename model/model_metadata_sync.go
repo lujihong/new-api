@@ -135,6 +135,15 @@ func NormalizeModelEndpoints(raw string) (string, error) {
 				}
 				endpoints[key] = normalized
 			case map[string]any:
+				// An empty object declares a built-in protocol without overriding its path.
+				// Keep malformed partial objects invalid instead of hiding configuration errors.
+				if len(details) == 0 {
+					info, ok := common.GetDefaultEndpointInfo(constant.EndpointType(key))
+					if !ok {
+						return "", fmt.Errorf("no default path for endpoint type: %s", key)
+					}
+					details["path"], details["method"] = info.Path, info.Method
+				}
 				path, ok := details["path"].(string)
 				if !ok {
 					return "", errors.New("endpoint path must be a string")
