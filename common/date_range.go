@@ -77,6 +77,16 @@ func DateRangeFromPreset(preset, history string, now time.Time) (int64, int64, e
 	return start.Unix(), end.Unix(), nil
 }
 
+func BeijingDateTime(unixSeconds int64) string {
+	if unixSeconds <= 0 {
+		return ""
+	}
+	return time.Unix(unixSeconds, 0).In(BeijingLocation).Format("2006-01-02 15:04:05")
+}
+
 func BeijingISOTime(unixSeconds int64) string {
+	if unixSeconds <= 0 {
+		return ""
+	}
 	return time.Unix(unixSeconds, 0).In(BeijingLocation).Format(time.RFC3339)
 }

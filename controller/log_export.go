@@ -93,9 +93,9 @@ func GetLogsExport(c *gin.Context) {
 				taskID = value
 			}
 		}
-		rows = append(rows, []any{log.Id, log.UserId, log.Username, log.CreatedAt, common.BeijingISOTime(log.CreatedAt), log.Type, log.TokenName, log.ModelName, taskID, log.Quota, log.PromptTokens, log.CompletionTokens, log.UseTime, log.IsStream, log.ChannelId, log.Group, log.RequestId, log.UpstreamRequestId, log.Content, log.Other})
+		rows = append(rows, []any{log.Id, log.UserId, log.Username, common.BeijingDateTime(log.CreatedAt), log.Type, log.TokenName, log.ModelName, taskID, log.Quota, log.PromptTokens, log.CompletionTokens, log.UseTime, log.IsStream, log.ChannelId, log.Group, log.RequestId, log.UpstreamRequestId, log.Content, log.Other})
 	}
-	data, err := common.BuildXLSX("API usage logs", start, end, total, common.XLSXSheet{Name: "日志", Headers: []string{"ID", "User ID", "Username", "Created At (Unix)", "Created At (Beijing)", "Type", "Token Name", "Model Name", "Task ID", "Quota", "Prompt Tokens", "Completion Tokens", "Use Time", "Stream", "Channel ID", "Group", "Request ID", "Upstream Request ID", "Content", "Other"}, Rows: rows})
+	data, err := common.BuildXLSX("API usage logs", start, end, total, common.XLSXSheet{Name: "日志", Headers: []string{"ID", "User ID", "Username", "Created At (Beijing)", "Type", "Token Name", "Model Name", "Task ID", "Quota", "Prompt Tokens", "Completion Tokens", "Use Time", "Stream", "Channel ID", "Group", "Request ID", "Upstream Request ID", "Content", "Other"}, Rows: rows})
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -120,9 +120,9 @@ func GetTaskLogsExport(c *gin.Context) {
 	}
 	xlsxRows := make([][]any, 0, len(rows))
 	for _, row := range rows {
-		xlsxRows = append(xlsxRows, []any{row.ID, row.UserID, row.TaskID, row.Platform, row.Action, row.Status, row.Group, row.Quota, row.SubmitTime, common.BeijingISOTime(row.SubmitTime), row.StartTime, row.FinishTime, row.Progress, row.FailReason})
+		xlsxRows = append(xlsxRows, []any{row.ID, row.UserID, row.TaskID, row.Platform, row.Action, row.Status, row.Group, row.Quota, common.BeijingDateTime(row.SubmitTime), common.BeijingDateTime(row.StartTime), common.BeijingDateTime(row.FinishTime), row.Progress, row.FailReason})
 	}
-	data, err := common.BuildXLSX("Task logs", start, end, total, common.XLSXSheet{Name: "任务日志", Headers: []string{"ID", "User ID", "Task ID", "Platform", "Action", "Status", "Group", "Quota", "Submit Time", "Submit Time (Beijing)", "Start Time", "Finish Time", "Progress", "Fail Reason"}, Rows: xlsxRows})
+	data, err := common.BuildXLSX("Task logs", start, end, total, common.XLSXSheet{Name: "任务日志", Headers: []string{"ID", "User ID", "Task ID", "Platform", "Action", "Status", "Group", "Quota", "Submit Time (Beijing)", "Start Time (Beijing)", "Finish Time (Beijing)", "Progress", "Fail Reason"}, Rows: xlsxRows})
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -147,9 +147,9 @@ func GetDrawingLogsExport(c *gin.Context) {
 	}
 	xlsxRows := make([][]any, 0, len(rows))
 	for _, row := range rows {
-		xlsxRows = append(xlsxRows, []any{row.ID, row.UserID, row.MJID, row.Action, row.Status, row.Progress, row.SubmitTime, common.BeijingISOTime(row.SubmitTime), row.StartTime, row.FinishTime, row.Quota, row.FailReason})
+		xlsxRows = append(xlsxRows, []any{row.ID, row.UserID, row.MJID, row.Action, row.Status, row.Progress, common.BeijingDateTime(row.SubmitTime), common.BeijingDateTime(row.StartTime), common.BeijingDateTime(row.FinishTime), row.Quota, row.FailReason})
 	}
-	data, err := common.BuildXLSX("Drawing logs", start, end, total, common.XLSXSheet{Name: "绘图日志", Headers: []string{"ID", "User ID", "MJ ID", "Action", "Status", "Progress", "Submit Time", "Submit Time (Beijing)", "Start Time", "Finish Time", "Quota", "Fail Reason"}, Rows: xlsxRows})
+	data, err := common.BuildXLSX("Drawing logs", start, end, total, common.XLSXSheet{Name: "绘图日志", Headers: []string{"ID", "User ID", "MJ ID", "Action", "Status", "Progress", "Submit Time (Beijing)", "Start Time (Beijing)", "Finish Time (Beijing)", "Quota", "Fail Reason"}, Rows: xlsxRows})
 	if err != nil {
 		common.ApiError(c, err)
 		return

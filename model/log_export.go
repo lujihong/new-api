@@ -43,7 +43,7 @@ func GetTokenLogPage(ctx context.Context, userID, tokenID int, start, end int64,
 		Where("user_id = ? AND token_id = ? AND created_at >= ? AND created_at < ?", userID, tokenID, start, end)
 	if snapshotID <= 0 {
 		var maxID int
-		if err := base.Select("COALESCE(MAX(id), 0)").Scan(&maxID).Error; err != nil {
+		if err := base.Session(&gorm.Session{}).Select("COALESCE(MAX(id), 0)").Scan(&maxID).Error; err != nil {
 			return TokenLogPage{}, err
 		}
 		snapshotID = maxID
