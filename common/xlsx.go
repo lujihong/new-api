@@ -36,11 +36,11 @@ func BuildXLSX(title string, start, end int64, rowCount int64, sheets ...XLSXShe
 	}
 	metaRows := [][]any{
 		{"导出标题", SafeExcelText(title)},
-		{"筛选开始（含）", BeijingISOTime(start)},
-		{"筛选结束（不含）", BeijingISOTime(end)},
+		{"筛选开始（含）", BeijingDateTime(start)},
+		{"筛选结束（不含）", BeijingDateTime(end)},
 		{"时区", "Asia/Shanghai (Beijing)"},
 		{"行数", rowCount},
-		{"生成时间", BeijingISOTime(time.Now().Unix())},
+		{"生成时间", BeijingDateTime(time.Now().Unix())},
 	}
 	for r, row := range metaRows {
 		for c, value := range row {
