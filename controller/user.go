@@ -473,17 +473,17 @@ func GetQuotaByTokenKey(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"success": false, "message": "用户不存在"})
 		return
 	}
-		c.JSON(http.StatusOK, gin.H{
-			"success": true,
-			"data": gin.H{
-				"quota":    user.Quota,
-				"username": user.Username,
-				"user_id":  user.Id,
-			},
-		})
-	}
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"quota":    user.Quota,
+			"username": user.Username,
+			"user_id":  user.Id,
+		},
+	})
+}
 
-	type TransferAffQuotaRequest struct {
+type TransferAffQuotaRequest struct {
 	Quota int `json:"quota" binding:"required"`
 }
 

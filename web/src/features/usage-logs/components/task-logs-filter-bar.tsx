@@ -173,7 +173,7 @@ export function TaskLogsFilterBar<TData>(props: TaskLogsFilterBarProps<TData>) {
     try {
       const params = {
         ...buildSearchParams(filters, props.logCategory),
-        scope: viewScope,
+        scope: isAdmin ? viewScope : "self",
       };
       await downloadUsageLogsExport(props.logCategory, params);
     } catch (error) {
@@ -181,7 +181,7 @@ export function TaskLogsFilterBar<TData>(props: TaskLogsFilterBarProps<TData>) {
         error instanceof Error ? error.message : "导出使用日志失败";
       toast.error(message);
     }
-  }, [filters, props.logCategory, viewScope]);
+  }, [filters, props.logCategory, viewScope, isAdmin]);
 
   const dateRangeFilter = (
     <LogsFilterField wide>

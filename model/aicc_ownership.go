@@ -79,7 +79,7 @@ func RecordAICCAssetGroupOwnership(userID int, groupID, groupType string, channe
 func recordAICCGroup(tx *gorm.DB, userID int, groupID, groupType string, binding AICCBinding) error {
 	if binding.Valid() {
 		var conflicts int64
-			if err := tx.Model(&AICCAssetOwnership{}).Where("group_id = ? AND (user_id <> ? OR aicc_account_id IS NULL OR aicc_account_id <> ? OR channel_id IS NULL OR channel_id <> ?)", groupID, userID, binding.AICCAccountID, binding.ChannelID).Count(&conflicts).Error; err != nil {
+		if err := tx.Model(&AICCAssetOwnership{}).Where("group_id = ? AND (user_id <> ? OR aicc_account_id IS NULL OR aicc_account_id <> ? OR channel_id IS NULL OR channel_id <> ?)", groupID, userID, binding.AICCAccountID, binding.ChannelID).Count(&conflicts).Error; err != nil {
 			return err
 		}
 		if conflicts > 0 {

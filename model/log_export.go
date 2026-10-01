@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/QuantumNous/new-api/common"
 	"gorm.io/gorm"
 )
 
@@ -23,7 +24,7 @@ type TokenLogPage struct {
 
 // GetTokenLogPage is a read-only, keyset-paginated query. It deliberately
 // receives both userID and tokenID so callers cannot widen a token's scope.
-func GetTokenLogPage(ctx context.Context, userID, tokenID int, start, end int64, limit, snapshotID, beforeID int) (TokenLogPage, error) {
+func GetTokenLogPage(ctx context.Context, userID, tokenID int, start, end int64, limit, snapshotID, beforeID int, skipTotal ...bool) (TokenLogPage, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -53,10 +54,13 @@ func GetTokenLogPage(ctx context.Context, userID, tokenID int, start, end int64,
 	}
 	base = base.Where("id <= ?", snapshotID)
 	var total int64
-	if err := base.Count(&total).Error; err != nil {
-		return TokenLogPage{}, err
+	if len(skipTotal) == 0 || !skipTotal[0] {
+		if err := base.Session(&gorm.Session{}).Count(&total).Error; err != nil {
+			return TokenLogPage{}, err
+		}
 	}
 	query := base
+	query = exportSnapshotQuery(query, ctx)
 	if beforeID > 0 {
 		query = query.Where("id < ?", beforeID)
 	}
@@ -87,6 +91,8 @@ func GetTokenLogPage(ctx context.Context, userID, tokenID int, start, end int64,
 }
 
 type LogExportFilter struct {
+	SnapshotID        int
+	ViewerRole        int
 	UserID            int
 	Start             int64
 	End               int64
@@ -101,10 +107,16 @@ type LogExportFilter struct {
 }
 
 func queryExportLogs(ctx context.Context, filter LogExportFilter) (*gorm.DB, error) {
+	if filter.UserID <= 0 && filter.ViewerRole < common.RoleAdminUser {
+		return nil, errors.New("invalid export scope")
+	}
 	if filter.Start <= 0 || filter.End <= filter.Start {
 		return nil, errors.New("invalid time range")
 	}
 	tx := LOG_DB.WithContext(ctx).Model(&Log{}).Where("created_at >= ? AND created_at < ?", filter.Start, filter.End)
+	if filter.SnapshotID > 0 {
+		tx = tx.Where("id <= ?", filter.SnapshotID)
+	}
 	if filter.UserID > 0 {
 		tx = tx.Where("user_id = ?", filter.UserID)
 	}
@@ -164,6 +176,7 @@ func ExportLogsPage(ctx context.Context, filter LogExportFilter, beforeID int, l
 			return nil, false, 0, err
 		}
 	}
+	query = exportSnapshotQuery(query, ctx)
 	if beforeID > 0 {
 		query = query.Where("id < ?", beforeID)
 	}
@@ -179,8 +192,10 @@ func ExportLogsPage(ctx context.Context, filter LogExportFilter, beforeID int, l
 	for i, log := range logs {
 		ids[i] = log.Id
 	}
-	if filter.UserID > 0 {
+	if filter.UserID > 0 || filter.ViewerRole < common.RoleAdminUser {
 		formatUserLogs(logs, 0)
+	} else if filter.ViewerRole >= common.RoleRootUser {
+		FormatRootLogs(logs)
 	} else {
 		FormatAdminLogs(logs)
 	}
@@ -206,8 +221,10 @@ func ExportLogs(ctx context.Context, filter LogExportFilter, maxRows int64) ([]*
 	if err = query.Order("id DESC").Find(&logs).Error; err != nil {
 		return nil, 0, err
 	}
-	if filter.UserID > 0 {
+	if filter.UserID > 0 || filter.ViewerRole < common.RoleAdminUser {
 		formatUserLogs(logs, 0)
+	} else if filter.ViewerRole >= common.RoleRootUser {
+		FormatRootLogs(logs)
 	} else {
 		FormatAdminLogs(logs)
 	}
@@ -215,6 +232,9 @@ func ExportLogs(ctx context.Context, filter LogExportFilter, maxRows int64) ([]*
 }
 
 type TaskExportRow struct {
+	Task             *Task
+	PluginKey        string
+	PluginAuthorURL  string
 	ID               int64
 	UserID           int
 	Username         string
@@ -272,6 +292,7 @@ func ExportTaskLogsPage(ctx context.Context, userID int, start, end int64, taskI
 	if channelID != "" {
 		query = query.Where("channel_id = ?", channelID)
 	}
+	query = exportSnapshotQuery(query, ctx)
 	if beforeID > 0 {
 		query = query.Where("id < ?", beforeID)
 	}
@@ -286,18 +307,40 @@ func ExportTaskLogsPage(ctx context.Context, userID int, start, end int64, taskI
 	if hasMore {
 		tasks = tasks[:limit]
 	}
+	usernames := map[int]string{}
+	ids := make([]int, 0, len(tasks))
+	for _, task := range tasks {
+		ids = append(ids, task.UserId)
+	}
+	if userID == 0 && len(ids) > 0 {
+		var users []struct {
+			Id       int
+			Username string
+		}
+		if err := DB.WithContext(ctx).Model(&User{}).Select("id, username").Where("id IN ?", ids).Find(&users).Error; err != nil {
+			return nil, false, err
+		}
+		for _, u := range users {
+			usernames[u.Id] = u.Username
+		}
+	}
+	for _, task := range tasks {
+		task.Username = usernames[task.UserId]
+	}
 	rows := make([]TaskExportRow, 0, len(tasks))
 	for _, task := range tasks {
-		row := TaskExportRow{ID: task.ID, UserID: task.UserId, TaskID: task.TaskID, Platform: string(task.Platform), Action: task.Action, Status: string(task.Status), Group: task.Group, Quota: task.Quota, ChannelID: task.ChannelId, SubmitTime: task.SubmitTime, StartTime: task.StartTime, FinishTime: task.FinishTime, Progress: task.Progress, FailReason: task.FailReason, OriginModel: task.Properties.OriginModelName, ActualModel: task.Properties.UpstreamModelName, UpstreamTaskID: task.PrivateData.UpstreamTaskID, NodeName: task.PrivateData.NodeName}
+		row := TaskExportRow{Task: task, Username: task.Username, ID: task.ID, UserID: task.UserId, TaskID: task.TaskID, Platform: string(task.Platform), Action: task.Action, Status: string(task.Status), Group: task.Group, Quota: task.Quota, ChannelID: task.ChannelId, SubmitTime: task.SubmitTime, StartTime: task.StartTime, FinishTime: task.FinishTime, Progress: task.Progress, FailReason: task.FailReason, OriginModel: task.Properties.OriginModelName, ActualModel: task.Properties.UpstreamModelName, UpstreamTaskID: task.PrivateData.UpstreamTaskID, NodeName: task.PrivateData.NodeName}
 		if execution := task.PrivateData.Execution; execution != nil {
 			row.RequestID = execution.RequestID
 			row.RequestPath = execution.RequestPath
 			if plugin := execution.TaskPlugin; plugin != nil {
+				row.PluginKey = plugin.Key
 				row.PluginName = plugin.Name
 				row.PluginVersion = plugin.Version
 				row.APIVersion = plugin.APIVersion
 				row.PluginGeneration = plugin.Generation
 				if plugin.Author != nil {
+					row.PluginAuthorURL = plugin.Author.URL
 					row.PluginAuthor = plugin.Author.Name
 				}
 			}
@@ -331,16 +374,18 @@ func ExportTaskLogs(ctx context.Context, userID int, start, end int64, taskID st
 	}
 	rows := make([]TaskExportRow, 0, len(tasks))
 	for _, task := range tasks {
-		row := TaskExportRow{ID: task.ID, UserID: task.UserId, TaskID: task.TaskID, Platform: string(task.Platform), Action: task.Action, Status: string(task.Status), Group: task.Group, Quota: task.Quota, ChannelID: task.ChannelId, SubmitTime: task.SubmitTime, StartTime: task.StartTime, FinishTime: task.FinishTime, Progress: task.Progress, FailReason: task.FailReason, OriginModel: task.Properties.OriginModelName, ActualModel: task.Properties.UpstreamModelName, UpstreamTaskID: task.PrivateData.UpstreamTaskID, NodeName: task.PrivateData.NodeName}
+		row := TaskExportRow{Task: task, Username: task.Username, ID: task.ID, UserID: task.UserId, TaskID: task.TaskID, Platform: string(task.Platform), Action: task.Action, Status: string(task.Status), Group: task.Group, Quota: task.Quota, ChannelID: task.ChannelId, SubmitTime: task.SubmitTime, StartTime: task.StartTime, FinishTime: task.FinishTime, Progress: task.Progress, FailReason: task.FailReason, OriginModel: task.Properties.OriginModelName, ActualModel: task.Properties.UpstreamModelName, UpstreamTaskID: task.PrivateData.UpstreamTaskID, NodeName: task.PrivateData.NodeName}
 		if execution := task.PrivateData.Execution; execution != nil {
 			row.RequestID = execution.RequestID
 			row.RequestPath = execution.RequestPath
 			if plugin := execution.TaskPlugin; plugin != nil {
+				row.PluginKey = plugin.Key
 				row.PluginName = plugin.Name
 				row.PluginVersion = plugin.Version
 				row.APIVersion = plugin.APIVersion
 				row.PluginGeneration = plugin.Generation
 				if plugin.Author != nil {
+					row.PluginAuthorURL = plugin.Author.URL
 					row.PluginAuthor = plugin.Author.Name
 				}
 			}
@@ -401,6 +446,7 @@ func ExportDrawingLogsPage(ctx context.Context, userID int, start, end int64, mj
 	if channelID != "" {
 		query = query.Where("channel_id = ?", channelID)
 	}
+	query = exportSnapshotQuery(query, ctx)
 	if beforeID > 0 {
 		query = query.Where("id < ?", beforeID)
 	}

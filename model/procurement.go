@@ -113,13 +113,13 @@ func (p *PurchasePriceVersion) BeforeCreate(_ *gorm.DB) error {
 	if err != nil {
 		return err
 	}
-		p.UnitPriceDecimal = price
-		if legacy, err := decimal.NewFromString(price); err == nil {
-			value, _ := legacy.Float64()
-			if !math.IsNaN(value) && !math.IsInf(value, 0) && value >= 0 {
-				p.UnitPrice = value
-			}
+	p.UnitPriceDecimal = price
+	if legacy, err := decimal.NewFromString(price); err == nil {
+		value, _ := legacy.Float64()
+		if !math.IsNaN(value) && !math.IsInf(value, 0) && value >= 0 {
+			p.UnitPrice = value
 		}
+	}
 	if p.Status == "" {
 		p.Status = ProcurementStatusActive
 	}
@@ -228,69 +228,69 @@ func validateAttempt(attempt *UpstreamAttempt) error {
 			attempt.CostAmountDecimal = decimal.NewFromFloat(*attempt.CostAmount).String()
 		}
 	}
-		if attempt.CostAmountDecimal != "" {
-			text := strings.TrimSpace(attempt.CostAmountDecimal)
-			if strings.ContainsAny(text, "eE") || len(text) > 64 {
-				return errors.New("cost amount must be a standard decimal without exponent")
-			}
-			d, err := decimal.NewFromString(text)
-			if err != nil || d.IsNegative() {
-				return errors.New("cost amount must be a non-negative decimal")
-			}
+	if attempt.CostAmountDecimal != "" {
+		text := strings.TrimSpace(attempt.CostAmountDecimal)
+		if strings.ContainsAny(text, "eE") || len(text) > 64 {
+			return errors.New("cost amount must be a standard decimal without exponent")
 		}
-		if attempt.CostStatus == CostStatusUnknown && (attempt.CostAmount != nil || attempt.CostAmountDecimal != "") {
-			return errors.New("unknown cost status cannot have an amount")
+		d, err := decimal.NewFromString(text)
+		if err != nil || d.IsNegative() {
+			return errors.New("cost amount must be a non-negative decimal")
 		}
-		if attempt.CostStatus == CostStatusKnown && attempt.CostAmount == nil && attempt.CostAmountDecimal == "" {
-			return errors.New("known cost status requires an amount")
-		}
-		if attempt.CostStatus == CostStatusKnown && attempt.CostCurrency == "" {
-			return errors.New("known cost status requires a currency")
-		}
-		if attempt.CostCurrency != "" && !validCurrency(attempt.CostCurrency) {
-			return fmt.Errorf("invalid currency: %s", attempt.CostCurrency)
-		}
-		return nil
 	}
+	if attempt.CostStatus == CostStatusUnknown && (attempt.CostAmount != nil || attempt.CostAmountDecimal != "") {
+		return errors.New("unknown cost status cannot have an amount")
+	}
+	if attempt.CostStatus == CostStatusKnown && attempt.CostAmount == nil && attempt.CostAmountDecimal == "" {
+		return errors.New("known cost status requires an amount")
+	}
+	if attempt.CostStatus == CostStatusKnown && attempt.CostCurrency == "" {
+		return errors.New("known cost status requires a currency")
+	}
+	if attempt.CostCurrency != "" && !validCurrency(attempt.CostCurrency) {
+		return fmt.Errorf("invalid currency: %s", attempt.CostCurrency)
+	}
+	return nil
+}
 
-	func attemptConflicts(existing, incoming *UpstreamAttempt) error {
-		compare := func(name, a, b string) error {
-			if b != "" && a != b {
-				return fmt.Errorf("attempt %s conflict", name)
-			}
-			return nil
-		}
-		if incoming.ChannelID != 0 && existing.ChannelID != incoming.ChannelID {
-			return errors.New("attempt channel_id conflict")
-		}
-		for _, pair := range [][3]string{
-			{"request_id", existing.RequestID, incoming.RequestID},
-			{"task_id", existing.TaskID, incoming.TaskID},
-			{"origin_model", existing.OriginModel, incoming.OriginModel},
-			{"upstream_model", existing.UpstreamModel, incoming.UpstreamModel},
-			{"upstream_request_id", existing.UpstreamRequestID, incoming.UpstreamRequestID},
-			{"upstream_task_id", existing.UpstreamTaskID, incoming.UpstreamTaskID},
-			{"usage_json", existing.UsageJSON, incoming.UsageJSON},
-			{"failure_reason", existing.FailureReason, incoming.FailureReason},
-		} {
-			if err := compare(pair[0], pair[1], pair[2]); err != nil {
-				return err
-			}
-		}
-		if incoming.PurchasePriceVersionID != nil && (existing.PurchasePriceVersionID == nil || *existing.PurchasePriceVersionID != *incoming.PurchasePriceVersionID) {
-			return errors.New("attempt purchase price version conflict")
-		}
-		if incoming.CostStatus != "" && incoming.CostStatus != CostStatusUnknown && existing.CostStatus != "" && incoming.CostStatus != existing.CostStatus {
-			return errors.New("attempt cost status conflict")
-		}
-		if incoming.CostAmountDecimal != "" && existing.CostAmountDecimal != "" && incoming.CostAmountDecimal != existing.CostAmountDecimal {
-			return errors.New("attempt cost amount conflict")
-		}
-		if incoming.CostCurrency != "" && existing.CostCurrency != "" && incoming.CostCurrency != existing.CostCurrency {
-			return errors.New("attempt cost currency conflict")
+func attemptConflicts(existing, incoming *UpstreamAttempt) error {
+	compare := func(name, a, b string) error {
+		if b != "" && a != b {
+			return fmt.Errorf("attempt %s conflict", name)
 		}
 		return nil
 	}
+	if incoming.ChannelID != 0 && existing.ChannelID != incoming.ChannelID {
+		return errors.New("attempt channel_id conflict")
+	}
+	for _, pair := range [][3]string{
+		{"request_id", existing.RequestID, incoming.RequestID},
+		{"task_id", existing.TaskID, incoming.TaskID},
+		{"origin_model", existing.OriginModel, incoming.OriginModel},
+		{"upstream_model", existing.UpstreamModel, incoming.UpstreamModel},
+		{"upstream_request_id", existing.UpstreamRequestID, incoming.UpstreamRequestID},
+		{"upstream_task_id", existing.UpstreamTaskID, incoming.UpstreamTaskID},
+		{"usage_json", existing.UsageJSON, incoming.UsageJSON},
+		{"failure_reason", existing.FailureReason, incoming.FailureReason},
+	} {
+		if err := compare(pair[0], pair[1], pair[2]); err != nil {
+			return err
+		}
+	}
+	if incoming.PurchasePriceVersionID != nil && (existing.PurchasePriceVersionID == nil || *existing.PurchasePriceVersionID != *incoming.PurchasePriceVersionID) {
+		return errors.New("attempt purchase price version conflict")
+	}
+	if incoming.CostStatus != "" && incoming.CostStatus != CostStatusUnknown && existing.CostStatus != "" && incoming.CostStatus != existing.CostStatus {
+		return errors.New("attempt cost status conflict")
+	}
+	if incoming.CostAmountDecimal != "" && existing.CostAmountDecimal != "" && incoming.CostAmountDecimal != existing.CostAmountDecimal {
+		return errors.New("attempt cost amount conflict")
+	}
+	if incoming.CostCurrency != "" && existing.CostCurrency != "" && incoming.CostCurrency != existing.CostCurrency {
+		return errors.New("attempt cost currency conflict")
+	}
+	return nil
+}
 
 // RecordUpstreamAttempt creates an idempotent upstream attempt ledger entry.
 func RecordUpstreamAttempt(attempt *UpstreamAttempt) error {

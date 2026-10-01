@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/gin-gonic/gin"
 	"github.com/xuri/excelize/v2"
@@ -52,7 +51,7 @@ func GetTokenLogPage(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	result, err := model.GetTokenLogPage(c.Request.Context(), c.GetInt("id"), c.GetInt("token_id"), start, end, limit, snapshotID, beforeID)
+	result, err := model.GetTokenLogPage(c.Request.Context(), c.GetInt("id"), c.GetInt("token_id"), start, end, limit, snapshotID, beforeID, c.Query("skip_total") == "1" && beforeID > 0)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -77,15 +76,21 @@ func exportTaskStatusLabel(status string) string {
 		return "失败"
 	case "IN_PROGRESS":
 		return "进行中"
-	case "QUEUED", "SUBMITTED", "NOT_START":
+	case "QUEUED", "SUBMITTED":
 		return "排队中"
+	case "NOT_START":
+		return "未启动"
+	case "UNKNOWN":
+		return "未知"
+	case "":
+		return "提交中"
 	default:
 		return status
 	}
 }
 
 func exportTaskActionLabel(action string) string {
-	labels := map[string]string{"text_to_video": "文生视频", "image_to_video": "图生视频", "text_to_image": "文生图", "music": "音乐生成", "lyrics": "歌词", "description": "描述"}
+	labels := map[string]string{"MUSIC": "生成音乐", "LYRICS": "生成歌词", "generate": "图生视频", "textGenerate": "文生视频", "firstTailGenerate": "首尾生视频", "referenceGenerate": "参照生视频", "remixGenerate": "视频混编"}
 	if label, ok := labels[action]; ok {
 		return label
 	}
@@ -122,64 +127,36 @@ func exportOtherMap(raw string) map[string]any {
 }
 
 func exportString(value any) string {
-	if value == nil {
+	// Composite values must be explicitly projected; never stringify a map.
+	switch v := value.(type) {
+	case string:
+		return v
+	case bool:
+		return strconv.FormatBool(v)
+	case float64:
+		return strconv.FormatFloat(v, 'f', -1, 64)
+	case int:
+		return strconv.Itoa(v)
+	case int64:
+		return strconv.FormatInt(v, 10)
+	case json.Number:
+		return v.String()
+	default:
 		return ""
 	}
-	return strings.TrimSpace(fmt.Sprint(value))
 }
 
 func exportCommonRow(log *model.Log, isAdmin, isRoot bool) []any {
-	other := exportOtherMap(log.Other)
-	publicTaskID := exportString(other["task_id"])
-	requestPath := ""
-	if audit, ok := other["audit_info"].(map[string]any); ok {
-		requestPath = exportString(audit["path"])
-		if requestPath == "" {
-			requestPath = exportString(audit["route"])
-		}
+	fields := commonDetailFields(log, exportOtherMap(log.Other), isAdmin, isRoot)
+	return []any{common.BeijingDateTime(log.CreatedAt), exportLogTypeLabel(log.Type), exportFieldText(fields)}
+}
+
+func exportFieldText(fields logExportFields) string {
+	parts := make([]string, 0, len(fields))
+	for _, field := range fields {
+		parts = append(parts, field.Name+"："+exportString(field.Value))
 	}
-	adminInfo, _ := other["admin_info"].(map[string]any)
-	if requestPath == "" && isAdmin {
-		requestPath = exportString(other["request_path"])
-	}
-	cacheRead := exportString(other["cache_tokens"])
-	cacheWrite := exportString(other["cache_creation_tokens"])
-	if cacheWrite == "" {
-		cacheWrite = exportString(other["cache_creation_tokens_5m"])
-	}
-	detail := exportCommonDetail(log, other, isAdmin)
-	row := []any{
-		common.BeijingDateTime(log.CreatedAt),
-		exportLogTypeLabel(log.Type),
-		log.TokenName,
-		log.ModelName,
-		log.Group,
-		log.PromptTokens,
-		log.CompletionTokens,
-		cacheRead,
-		cacheWrite,
-		exportDuration(log.UseTime),
-		map[bool]string{true: "是", false: "否"}[log.IsStream],
-		exportQuota(log.Quota, other),
-		log.RequestId,
-		log.UpstreamRequestId,
-		publicTaskID,
-		detail,
-		requestPath,
-	}
-	if isAdmin {
-		row = append(row, log.Username, log.ChannelName, log.ChannelId, log.Ip)
-		if adminInfo != nil {
-			row = append(row, exportString(adminInfo["usage_billing_path"]), exportString(adminInfo["reject_reason"]))
-		} else {
-			row = append(row, "", "")
-		}
-	}
-	if isRoot {
-		rootInfo, _ := other["root_info"].(map[string]any)
-		row = append(row, exportString(rootInfo["upstream_task_id"]), exportString(rootInfo["node_name"]))
-	}
-	return row
+	return strings.Join(parts, "\n")
 }
 
 func exportDuration(seconds int) string {
@@ -193,66 +170,19 @@ func exportDuration(seconds int) string {
 }
 
 func exportQuota(quota int, other map[string]any) string {
+	value := exportMoney(float64(quota), true)
 	if exportString(other["billing_source"]) == "subscription" {
-		return "订阅扣费 " + logger.FormatQuota(quota)
+		return "订阅扣费 " + value
 	}
-	return logger.FormatQuota(quota)
+	return value
 }
 
 func exportCommonDetail(log *model.Log, other map[string]any, isAdmin bool) string {
-	parts := make([]string, 0, 10)
-	if log.Content != "" {
-		parts = append(parts, "内容："+log.Content)
-	}
-	if value := exportString(other["reason"]); value != "" {
-		parts = append(parts, "原因："+value)
-	}
-	if value := exportString(other["matched_tier"]); value != "" {
-		parts = append(parts, "匹配档位："+value)
-	}
-	if mapped, ok := other["is_model_mapped"].(bool); ok && mapped {
-		if value := exportString(other["upstream_model_name"]); value != "" {
-			parts = append(parts, "实际模型："+value)
-		}
-	}
-	if other["is_system_prompt_overwritten"] == true {
-		parts = append(parts, "系统提示词：已覆盖")
-	}
-	if value := exportString(other["stream_status"]); value != "" {
-		parts = append(parts, "流式状态："+value)
-	}
-	if value := exportString(other["audio_input"]); value != "" {
-		parts = append(parts, "音频输入："+value)
-	}
-	if value := exportString(other["audio_output"]); value != "" {
-		parts = append(parts, "音频输出："+value)
-	}
-	if value := exportString(other["reasoning_effort"]); value != "" {
-		parts = append(parts, "推理强度："+value)
-	}
-	if isAdmin {
-		if value := exportString(other["request_conversion"]); value != "" {
-			parts = append(parts, "请求转换："+value)
-		}
-		if value := exportString(other["billing_mode"]); value != "" {
-			parts = append(parts, "计费模式："+value)
-		}
-	}
-	if len(parts) == 0 {
-		return ""
-	}
-	return strings.Join(parts, "；")
+	return exportFieldText(commonDetailFields(log, other, isAdmin, false))
 }
 
 func commonExportHeaders(isAdmin, isRoot bool) []string {
-	headers := []string{"时间", "日志类型", "令牌名称", "模型", "分组", "输入词元数", "输出词元数", "缓存读取词元数", "缓存写入词元数", "响应耗时", "流式", "费用", "请求标识", "上游请求标识", "任务标识", "详情", "请求路径"}
-	if isAdmin {
-		headers = append(headers, "用户", "渠道名称", "渠道编号", "IP地址", "计费路径", "拦截原因")
-	}
-	if isRoot {
-		headers = append(headers, "上游任务标识", "节点名称")
-	}
-	return headers
+	return []string{"时间", "日志类型", "详情"}
 }
 
 func GetLogsExport(c *gin.Context) {
@@ -261,15 +191,20 @@ func GetLogsExport(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	role := c.GetInt("role")
-	userID := 0
-	if role < common.RoleAdminUser || c.Query("scope") == "self" {
-		userID = c.GetInt("id")
+	userID, isAdmin, isRoot, err := resolveLogExportScope(c)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	role := common.RoleCommonUser
+	if isAdmin {
+		role = c.GetInt("role")
 	}
 	logType, _ := strconv.Atoi(c.Query("type"))
-	filter := model.LogExportFilter{UserID: userID, Start: start, End: end, LogType: logType, ModelName: c.Query("model_name"), Username: c.Query("username"), TokenName: c.Query("token_name"), Group: c.Query("group"), RequestID: c.Query("request_id"), UpstreamRequestID: c.Query("upstream_request_id")}
+	filter := model.LogExportFilter{ViewerRole: role, UserID: userID, Start: start, End: end, LogType: logType, ModelName: c.Query("model_name"), Username: c.Query("username"), TokenName: c.Query("token_name"), Group: c.Query("group"), RequestID: c.Query("request_id"), UpstreamRequestID: c.Query("upstream_request_id")}
 	filter.Channel, _ = strconv.Atoi(c.Query("channel"))
-	total, err := model.CountExportLogs(c.Request.Context(), filter)
+	snapshot, total, err := model.SnapshotExportLogs(c.Request.Context(), filter)
+	filter.SnapshotID = snapshot
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -278,28 +213,44 @@ func GetLogsExport(c *gin.Context) {
 		common.ApiError(c, fmt.Errorf("export contains %d rows; maximum is %d", total, common.MaxLogExportRows))
 		return
 	}
-	isAdmin, isRoot := role >= common.RoleAdminUser, role >= common.RoleRootUser
-	headers := commonExportHeaders(isAdmin, isRoot)
-	if err := writeXLSXStreamFile(c, "usage-logs.xlsx", "API usage logs", start, end, total, common.XLSXStreamSheet{Name: "日志", Headers: headers, WriteRows: func(writer *excelize.StreamWriter) error {
-		beforeID, rowNo := 0, 2
-		for {
-			logs, hasMore, _, pageErr := model.ExportLogsPage(c.Request.Context(), filter, beforeID, model.ExportPageSize, false)
-			if pageErr != nil {
-				return pageErr
-			}
-			for _, log := range logs {
-				if err := writer.SetRow(excelizeCell(rowNo), exportCommonRow(log, isAdmin, isRoot)); err != nil {
-					return err
-				}
-				rowNo++
-			}
-			if len(logs) == 0 || !hasMore {
-				break
-			}
-			beforeID = logs[len(logs)-1].Id
+	spool, err := newLogExportSpool()
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	defer spool.close()
+	beforeID := 0
+	for total > 0 {
+		logs, more, _, pageErr := model.ExportLogsPage(c.Request.Context(), filter, beforeID, model.ExportPageSize, false)
+		if pageErr != nil {
+			common.ApiError(c, pageErr)
+			return
 		}
-		return nil
-	}}); err != nil {
+		next := int64(0)
+		if len(logs) > 0 {
+			next = int64(logs[len(logs)-1].Id)
+		}
+		if err := checkExportPage(c, len(logs), int64(beforeID), next, more, spool.rows); err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		for _, log := range logs {
+			fields := logExportFields{{Name: "时间", Value: common.BeijingDateTime(log.CreatedAt)}, {Name: "日志类型", Value: exportLogTypeLabel(log.Type)}}
+			fields = append(fields, commonDetailFields(log, exportOtherMap(log.Other), isAdmin, isRoot)...)
+			if err := spool.append(c.Request.Context(), fields); err != nil {
+				common.ApiError(c, err)
+				return
+			}
+		}
+		if len(logs) == 0 || !more {
+			break
+		}
+		beforeID = int(next)
+	}
+	if err := writeXLSXStreamFile(c, "usage-logs.xlsx", "API usage logs", start, end, spool.rows, common.XLSXStreamSheet{
+		Name: "日志", Headers: spool.headers, Context: c.Request.Context(),
+		WriteRowsChecked: func(writer *common.XLSXRowWriter) error { return spool.write(c.Request.Context(), writer) },
+	}); err != nil {
 		common.ApiError(c, err)
 	}
 }
@@ -310,12 +261,14 @@ func GetTaskLogsExport(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	userID := 0
-	if c.GetInt("role") < common.RoleAdminUser {
-		userID = c.GetInt("id")
+	userID, isAdmin, _, err := resolveLogExportScope(c)
+	if err != nil {
+		common.ApiError(c, err)
+		return
 	}
 	taskID, channelID := c.Query("task_id"), c.Query("channel_id")
-	total, err := model.CountTaskLogs(c.Request.Context(), userID, start, end, taskID, channelID)
+	snapshot, total, err := model.SnapshotTaskExport(c.Request.Context(), userID, start, end, taskID, channelID, false)
+	c.Request = c.Request.WithContext(model.WithExportSnapshot(c.Request.Context(), snapshot))
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -324,28 +277,35 @@ func GetTaskLogsExport(c *gin.Context) {
 		common.ApiError(c, fmt.Errorf("export contains %d rows; maximum is %d", total, common.MaxLogExportRows))
 		return
 	}
-	role := c.GetInt("role")
-	headers := []string{"提交时间", "开始时间", "完成时间", "任务标识", "平台", "操作类型", "状态", "进度", "任务耗时", "原始模型", "实际模型", "失败原因"}
+	role := common.RoleCommonUser
+	if isAdmin {
+		role = c.GetInt("role")
+	}
+	headers := []string{"提交时间", "开始时间", "完成时间", "任务标识", "平台", "操作类型", "状态", "进度", "任务耗时", "原始模型", "实际模型", "失败原因", "产物"}
 	if role >= common.RoleAdminUser {
-		headers = append(headers, "用户", "渠道编号", "分组", "费用", "请求标识", "请求路径", "插件名称", "插件版本", "插件作者")
+		headers = append(headers, "用户", "渠道编号", "分组", "费用", "请求标识", "请求路径", "插件名称", "插件版本", "插件作者", "插件标识", "插件作者地址")
 	}
 	if role >= common.RoleRootUser {
 		headers = append(headers, "上游任务标识", "节点名称", "接口版本", "插件代次")
 	}
-	if err := writeXLSXStreamFile(c, "task-logs.xlsx", "Task logs", start, end, total, common.XLSXStreamSheet{Name: "任务日志", Headers: headers, WriteRows: func(writer *excelize.StreamWriter) error {
+	if err := writeXLSXStreamFile(c, "task-logs.xlsx", "Task logs", start, end, total, common.XLSXStreamSheet{Name: "任务日志", Headers: headers, Context: c.Request.Context(), WriteRowsChecked: func(writer *common.XLSXRowWriter) error {
 		beforeID, rowNo := int64(0), 2
-		for {
+		for total > 0 {
 			rows, more, pageErr := model.ExportTaskLogsPage(c.Request.Context(), userID, start, end, taskID, channelID, beforeID, model.ExportPageSize)
 			if pageErr != nil {
 				return pageErr
 			}
+			next := int64(0)
+			if len(rows) > 0 {
+				next = int64(rows[len(rows)-1].ID)
+			}
+			if err := checkExportPage(c, len(rows), int64(beforeID), next, more, int64(rowNo-2)); err != nil {
+				return err
+			}
 			for _, row := range rows {
-				values := []any{common.BeijingDateTime(row.SubmitTime), common.BeijingDateTime(row.StartTime), common.BeijingDateTime(row.FinishTime), row.TaskID, row.Platform, exportTaskActionLabel(row.Action), exportTaskStatusLabel(row.Status), row.Progress, exportDuration(int(row.FinishTime - row.SubmitTime)), row.OriginModel, row.ActualModel, row.FailReason}
-				if role >= common.RoleAdminUser {
-					values = append(values, strconv.Itoa(row.UserID), row.ChannelID, row.Group, exportQuota(row.Quota, nil), row.RequestID, row.RequestPath, row.PluginName, row.PluginVersion, row.PluginAuthor)
-				}
-				if role >= common.RoleRootUser {
-					values = append(values, row.UpstreamTaskID, row.NodeName, row.APIVersion, row.PluginGeneration)
+				values, err := taskExportRow(row, role)
+				if err != nil {
+					return err
 				}
 				if err := writer.SetRow(excelizeCell(rowNo), values); err != nil {
 					return err
@@ -369,12 +329,14 @@ func GetDrawingLogsExport(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	userID := 0
-	if c.GetInt("role") < common.RoleAdminUser {
-		userID = c.GetInt("id")
+	userID, isAdmin, _, err := resolveLogExportScope(c)
+	if err != nil {
+		common.ApiError(c, err)
+		return
 	}
 	mjID, channelID := c.Query("mj_id"), c.Query("channel_id")
-	total, err := model.CountDrawingLogs(c.Request.Context(), userID, start, end, mjID, channelID)
+	snapshot, total, err := model.SnapshotTaskExport(c.Request.Context(), userID, start, end, mjID, channelID, true)
+	c.Request = c.Request.WithContext(model.WithExportSnapshot(c.Request.Context(), snapshot))
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -383,23 +345,27 @@ func GetDrawingLogsExport(c *gin.Context) {
 		common.ApiError(c, fmt.Errorf("export contains %d rows; maximum is %d", total, common.MaxLogExportRows))
 		return
 	}
-	role := c.GetInt("role")
-	headers := []string{"提交时间", "操作类型", "状态", "任务标识", "进度", "任务耗时", "图片地址", "提示词", "英文提示词", "失败原因"}
-	if role >= common.RoleAdminUser {
-		headers = append(headers, "渠道编号", "费用", "提交结果")
+	role := common.RoleCommonUser
+	if isAdmin {
+		role = c.GetInt("role")
 	}
-	if err := writeXLSXStreamFile(c, "drawing-logs.xlsx", "Drawing logs", start, end, total, common.XLSXStreamSheet{Name: "绘图日志", Headers: headers, WriteRows: func(writer *excelize.StreamWriter) error {
+	headers := drawingExportHeaders(role >= common.RoleAdminUser)
+	if err := writeXLSXStreamFile(c, "drawing-logs.xlsx", "Drawing logs", start, end, total, common.XLSXStreamSheet{Name: "绘图日志", Headers: headers, Context: c.Request.Context(), WriteRowsChecked: func(writer *common.XLSXRowWriter) error {
 		beforeID, rowNo := 0, 2
-		for {
+		for total > 0 {
 			rows, more, pageErr := model.ExportDrawingLogsPage(c.Request.Context(), userID, start, end, mjID, channelID, beforeID, model.ExportPageSize)
 			if pageErr != nil {
 				return pageErr
 			}
+			next := int64(0)
+			if len(rows) > 0 {
+				next = int64(rows[len(rows)-1].ID)
+			}
+			if err := checkExportPage(c, len(rows), int64(beforeID), next, more, int64(rowNo-2)); err != nil {
+				return err
+			}
 			for _, row := range rows {
-				values := []any{common.BeijingDateTime(row.SubmitTime), exportTaskActionLabel(row.Action), exportTaskStatusLabel(row.Status), row.MJID, row.Progress, exportDuration(int(row.FinishTime - row.SubmitTime)), row.ImageURL, row.Prompt, row.PromptEN, row.FailReason}
-				if role >= common.RoleAdminUser {
-					values = append(values, row.ChannelID, exportQuota(row.Quota, nil), row.Code)
-				}
+				values := drawingExportValues(row, role >= common.RoleAdminUser)
 				if err := writer.SetRow(excelizeCell(rowNo), values); err != nil {
 					return err
 				}

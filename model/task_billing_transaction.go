@@ -252,14 +252,14 @@ func SettleTaskQuotaTransactional(ctx context.Context, task *Task, targetQuota i
 			}
 		}
 
-			// 5. Update the authoritative task quota in the same transaction.
-			updateTask := tx.Model(&Task{}).Where("id = ?", dbTask.ID).Update("quota", targetQuota)
-			if updateTask.Error != nil {
-				return fmt.Errorf("update task %d quota failed: %w", dbTask.ID, updateTask.Error)
-			}
-			if updateTask.RowsAffected != 1 {
-				return fmt.Errorf("update task %d quota affected %d rows", dbTask.ID, updateTask.RowsAffected)
-			}
+		// 5. Update the authoritative task quota in the same transaction.
+		updateTask := tx.Model(&Task{}).Where("id = ?", dbTask.ID).Update("quota", targetQuota)
+		if updateTask.Error != nil {
+			return fmt.Errorf("update task %d quota failed: %w", dbTask.ID, updateTask.Error)
+		}
+		if updateTask.RowsAffected != 1 {
+			return fmt.Errorf("update task %d quota affected %d rows", dbTask.ID, updateTask.RowsAffected)
+		}
 
 		return nil
 	})

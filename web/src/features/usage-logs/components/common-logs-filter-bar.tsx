@@ -325,14 +325,14 @@ export function CommonLogsFilterBar<TData>(
       await downloadUsageLogsExport("common", {
         ...buildSearchParams(filters, "common"),
         type: logType,
-        scope: viewScope,
+        scope: isAdmin ? viewScope : "self",
       });
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "导出使用日志失败";
       toast.error(message);
     }
-  }, [filters, logType, viewScope]);
+  }, [filters, logType, viewScope, isAdmin]);
 
   const dateRangeFilter = (
     <LogsFilterField wide>
