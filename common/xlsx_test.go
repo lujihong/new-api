@@ -24,7 +24,7 @@ func TestBuildXLSXFileWritesReadableWorkbook(t *testing.T) {
 	for _, entry := range archive.File {
 		seen[entry.Name] = true
 	}
-	if !seen["xl/workbook.xml"] || !seen["xl/worksheets/sheet2.xml"] {
+	if !seen["xl/workbook.xml"] || !seen["xl/worksheets/sheet1.xml"] {
 		t.Fatalf("missing workbook parts: %v", seen)
 	}
 }
