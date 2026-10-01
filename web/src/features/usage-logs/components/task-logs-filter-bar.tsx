@@ -73,7 +73,7 @@ export function TaskLogsFilterBar<TData>(props: TaskLogsFilterBarProps<TData>) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const searchParams = route.useSearch();
-  const { isAdminView: isAdmin } = useLogsViewScope();
+  const { isAdminView: isAdmin, viewScope } = useLogsViewScope();
   const fetchingLogs = useIsFetching({ queryKey: ["logs"] });
 
   const [filters, setFilters] = useState<TaskLogsFilters>(() => {
@@ -171,14 +171,17 @@ export function TaskLogsFilterBar<TData>(props: TaskLogsFilterBarProps<TData>) {
   const hasAdditionalFilters = !!filterValue || !!filters.channel;
   const handleExport = useCallback(async () => {
     try {
-      const params = buildSearchParams(filters, props.logCategory);
+      const params = {
+        ...buildSearchParams(filters, props.logCategory),
+        scope: viewScope,
+      };
       await downloadUsageLogsExport(props.logCategory, params);
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "导出使用日志失败";
       toast.error(message);
     }
-  }, [filters, props.logCategory]);
+  }, [filters, props.logCategory, viewScope]);
 
   const dateRangeFilter = (
     <LogsFilterField wide>

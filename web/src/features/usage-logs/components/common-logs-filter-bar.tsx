@@ -125,7 +125,7 @@ export function CommonLogsFilterBar<TData>(
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const searchParams = route.useSearch();
-  const { isAdminView: isAdmin } = useLogsViewScope();
+  const { isAdminView: isAdmin, viewScope } = useLogsViewScope();
   const { sensitiveVisible, setSensitiveVisible } = useUsageLogsContext();
   const fetchingLogs = useIsFetching({ queryKey: ["logs"] });
   const { data: adminGroups } = useQuery({
@@ -325,13 +325,14 @@ export function CommonLogsFilterBar<TData>(
       await downloadUsageLogsExport("common", {
         ...buildSearchParams(filters, "common"),
         type: logType,
+        scope: viewScope,
       });
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "导出使用日志失败";
       toast.error(message);
     }
-  }, [filters, logType]);
+  }, [filters, logType, viewScope]);
 
   const dateRangeFilter = (
     <LogsFilterField wide>
