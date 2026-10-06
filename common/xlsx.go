@@ -42,11 +42,9 @@ type XLSXSheet struct {
 }
 
 type XLSXStreamSheet struct {
-	Name    string
-	Headers []string
-	// Deprecated: retained for source compatibility. The raw excelize writer
-	// cannot intercept input before excelize truncates it. Use WriteRowsChecked
-	// for strict input validation, cancellation and pre-spool byte budgets.
+	Name             string
+	Headers          []string
+	ColWidths        []float64
 	WriteRows        func(*excelize.StreamWriter) error
 	WriteRowsChecked func(*XLSXRowWriter) error
 	Context          context.Context
@@ -55,12 +53,13 @@ type XLSXStreamSheet struct {
 // XLSXRowWriter is a synchronous, bounded writer. Do not retain it or use it
 // concurrently. Errors are sticky even if a callback ignores a SetRow error.
 type XLSXRowWriter struct {
-	stream     *excelize.StreamWriter
-	ctx        context.Context
-	width, row int
-	estimated  int64
-	total      *int64
-	err        error
+	stream      *excelize.StreamWriter
+	ctx         context.Context
+	width, row  int
+	dataStyleID int
+	estimated   int64
+	total       *int64
+	err         error
 }
 
 func (w *XLSXRowWriter) WriteRow(values []any) error {
@@ -103,7 +102,11 @@ func (w *XLSXRowWriter) SetRow(cell string, values []any, opts ...excelize.RowOp
 	}
 	w.estimated += estimate
 	*w.total += estimate
-	if err := w.stream.SetRow(cell, cleaned, opts...); err != nil {
+	rowOpts := opts
+	if len(rowOpts) == 0 && w.dataStyleID > 0 {
+		rowOpts = []excelize.RowOpts{{StyleID: w.dataStyleID}}
+	}
+	if err := w.stream.SetRow(cell, cleaned, rowOpts...); err != nil {
 		return fail(err)
 	}
 	w.row = row
@@ -239,6 +242,20 @@ func BuildXLSXStreamFile(pathName, title string, start, end int64, rowCount int6
 	// Excelize internally creates an empty buffer; our writer deliberately ignores
 	// it. All ZIP bytes go straight to disk, and limits prohibit ZIP64 fixups.
 	book.SetZipWriter(func(io.Writer) excelize.ZipWriter { return zw })
+	wrapStyleID, _ := book.NewStyle(&excelize.Style{
+		Alignment: &excelize.Alignment{
+			WrapText: true,
+			Vertical: "center",
+		},
+	})
+	headerStyleID, _ := book.NewStyle(&excelize.Style{
+		Font: &excelize.Font{Bold: true},
+		Alignment: &excelize.Alignment{
+			Horizontal: "center",
+			Vertical:   "center",
+			WrapText:   true,
+		},
+	})
 	var total int64
 	for i, s := range sheets {
 		name := s.Name
@@ -257,16 +274,25 @@ func BuildXLSXStreamFile(pathName, title string, start, end int64, rowCount int6
 		if err != nil {
 			return 0, err
 		}
+		for colIdx, width := range s.ColWidths {
+			if width > 0 {
+				_ = sw.SetColWidth(colIdx+1, colIdx+1, width)
+			}
+		}
 		ctx := s.Context
 		if ctx == nil {
 			ctx = context.Background()
 		}
-		rw := &XLSXRowWriter{stream: sw, ctx: ctx, width: len(s.Headers), total: &total}
+		rw := &XLSXRowWriter{stream: sw, ctx: ctx, width: len(s.Headers), dataStyleID: wrapStyleID, total: &total}
 		header := make([]any, len(s.Headers))
 		for j, h := range s.Headers {
 			header[j] = h
 		}
-		if err := rw.SetRow("A1", header); err != nil {
+		headerOpts := excelize.RowOpts{Height: 26}
+		if headerStyleID > 0 {
+			headerOpts.StyleID = headerStyleID
+		}
+		if err := rw.SetRow("A1", header, headerOpts); err != nil {
 			return 0, err
 		}
 		if s.WriteRowsChecked != nil {

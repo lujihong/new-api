@@ -2,7 +2,6 @@ package controller
 
 import (
 	"encoding/base64"
-	"fmt"
 	"strings"
 
 	"github.com/expr-lang/expr/ast"
@@ -209,121 +208,16 @@ func exportCondition(s string) string {
 	return describe(tree.Node)
 }
 
-func exportDynamicPricing(f *logExportFields, o map[string]any) {
-	encoded := exportString(o["expr_b64"])
+func parsePriceTiers(encoded string) ([]exportPriceTier, bool) {
 	decoded, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
-		decoded = nil
+		return nil, false
 	}
-	expr := string(decoded)
-	tiers := []exportPriceTier{}
-	rules := []any{}
-	parsed := false
-	if tree, err := parser.Parse(strings.TrimPrefix(expr, "v1:")); err == nil {
-		tiers, rules, parsed = exportPriceTree(tree.Node)
+	expr := strings.TrimPrefix(string(decoded), "v1:")
+	tree, err := parser.Parse(expr)
+	if err != nil {
+		return nil, false
 	}
-	matched := exportString(o["matched_tier"])
-	if matched != "" {
-		f.add("匹配档位", matched)
-	} else {
-		f.add("匹配档位", "无匹配结果")
-	}
-	fixed, fixedOK := exportNumber(o["fixed_price"])
-	if expr != "" && o["billing_unit"] == "request" && fixedOK && fixed >= 0 {
-		unit := "次"
-		if o["image_count"] != nil {
-			unit = "张图像"
-		}
-		f.add("匹配档位单价", exportMoney(fixed, false)+"/"+unit)
-	} else if parsed && matched != "" {
-		for _, tier := range tiers {
-			if exportNormalizeTier(tier.label) != exportNormalizeTier(matched) {
-				continue
-			}
-			if tier.fixed != nil {
-				unit := "次"
-				if tier.image {
-					unit = "张图像"
-				}
-				f.add("匹配档位单价", exportMoney(*tier.fixed, false)+"/"+unit)
-			} else {
-				for _, v := range exportBillingVariables {
-					if v.cache && !exportHasCache(o) {
-						continue
-					}
-					if p, ok := tier.prices[v.key]; ok {
-						f.add("匹配档位"+v.label+"单价", exportMoney(p, false)+"/百万词元")
-					}
-				}
-			}
-			break
-		}
-	}
-	if encoded == "" {
-		return
-	}
-	if n, ok := exportNumber(o["image_count"]); ok {
-		f.add("计费图像数量", n)
-	}
-	if expr == "" {
-		return
-	}
-	if !parsed {
-		// This is also the UI's special-expression presentation. The frontend's
-		// plugin-schema matrix expansion is not implemented by this adapter.
-		f.add("计费表达式", expr)
-		return
-	}
-	visible := map[string]bool{}
-	for _, tier := range tiers {
-		for k, p := range tier.prices {
-			if p > 0 {
-				visible[k] = true
-			}
-		}
-	}
-	for i, tier := range tiers {
-		prefix := fmt.Sprintf("动态档位%d", i+1)
-		label := tier.label
-		if label == "" {
-			label = "默认"
-		}
-		f.add(prefix+"名称", label)
-		f.text(prefix+"条件", exportCondition(tier.condition))
-		if matched != "" && exportNormalizeTier(tier.label) == exportNormalizeTier(matched) {
-			f.add(prefix+"匹配状态", "已匹配")
-		}
-		for _, v := range exportBillingVariables {
-			if !visible[v.key] || (v.cache && !exportHasCache(o)) {
-				continue
-			}
-			text := "-"
-			if p := tier.prices[v.key]; p > 0 {
-				text = exportMoney(p, false) + "/百万词元"
-			}
-			f.add(prefix+v.label+"单价", text)
-		}
-		if tier.fixed != nil {
-			unit := "次"
-			if tier.image {
-				unit = "张图像"
-			}
-			f.add(prefix+"单价", exportMoney(*tier.fixed, false)+"/"+unit)
-		}
-	}
-	if trace, exists := o["request_rules"]; exists && trace != nil {
-		rules = exportArray(trace)
-	}
-	for i, raw := range rules {
-		rule := exportMap(raw)
-		if rule == nil {
-			continue
-		}
-		prefix := fmt.Sprintf("动态规则%d", i+1)
-		f.text(prefix+"条件", exportCondition(exportString(rule["cond"])))
-		if n, ok := exportNumber(rule["multiplier"]); ok {
-			f.add(prefix+"倍率", n)
-		}
-		f.add(prefix+"匹配状态", exportYes(rule["matched"] == true))
-	}
+	tiers, _, ok := exportPriceTree(tree.Node)
+	return tiers, ok
 }

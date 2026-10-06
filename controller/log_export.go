@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"os"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -146,19 +145,6 @@ func exportString(value any) string {
 	}
 }
 
-func exportCommonRow(log *model.Log, isAdmin, isRoot bool) []any {
-	fields := commonDetailFields(log, exportOtherMap(log.Other), isAdmin, isRoot)
-	return []any{common.BeijingDateTime(log.CreatedAt), exportLogTypeLabel(log.Type), exportFieldText(fields)}
-}
-
-func exportFieldText(fields logExportFields) string {
-	parts := make([]string, 0, len(fields))
-	for _, field := range fields {
-		parts = append(parts, field.Name+"："+exportString(field.Value))
-	}
-	return strings.Join(parts, "\n")
-}
-
 func exportDuration(seconds int) string {
 	if seconds <= 0 {
 		return ""
@@ -177,21 +163,13 @@ func exportQuota(quota int, other map[string]any) string {
 	return value
 }
 
-func exportCommonDetail(log *model.Log, other map[string]any, isAdmin bool) string {
-	return exportFieldText(commonDetailFields(log, other, isAdmin, false))
-}
-
-func commonExportHeaders(isAdmin, isRoot bool) []string {
-	return []string{"时间", "日志类型", "详情"}
-}
-
 func GetLogsExport(c *gin.Context) {
 	start, end, err := parseLogExportRange(c)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	userID, isAdmin, isRoot, err := resolveLogExportScope(c)
+	userID, isAdmin, _, err := resolveLogExportScope(c)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -213,43 +191,38 @@ func GetLogsExport(c *gin.Context) {
 		common.ApiError(c, fmt.Errorf("export contains %d rows; maximum is %d", total, common.MaxLogExportRows))
 		return
 	}
-	spool, err := newLogExportSpool()
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	defer spool.close()
-	beforeID := 0
-	for total > 0 {
-		logs, more, _, pageErr := model.ExportLogsPage(c.Request.Context(), filter, beforeID, model.ExportPageSize, false)
-		if pageErr != nil {
-			common.ApiError(c, pageErr)
-			return
-		}
-		next := int64(0)
-		if len(logs) > 0 {
-			next = int64(logs[len(logs)-1].Id)
-		}
-		if err := checkExportPage(c, len(logs), int64(beforeID), next, more, spool.rows); err != nil {
-			common.ApiError(c, err)
-			return
-		}
-		for _, log := range logs {
-			fields := logExportFields{{Name: "时间", Value: common.BeijingDateTime(log.CreatedAt)}, {Name: "日志类型", Value: exportLogTypeLabel(log.Type)}}
-			fields = append(fields, commonDetailFields(log, exportOtherMap(log.Other), isAdmin, isRoot)...)
-			if err := spool.append(c.Request.Context(), fields); err != nil {
-				common.ApiError(c, err)
-				return
+	headers, colWidths := commonLogExportHeaders(isAdmin && filter.ViewerRole >= common.RoleAdminUser)
+	if err := writeXLSXStreamFile(c, "usage-logs.xlsx", "通用日志", start, end, total, common.XLSXStreamSheet{
+		Name: "日志", Headers: headers, ColWidths: colWidths, Context: c.Request.Context(),
+		WriteRowsChecked: func(writer *common.XLSXRowWriter) error {
+			beforeID := 0
+			rowNo := 2
+			for total > 0 {
+				logs, more, _, pageErr := model.ExportLogsPage(c.Request.Context(), filter, beforeID, model.ExportPageSize, false)
+				if pageErr != nil {
+					return pageErr
+				}
+				next := int64(0)
+				if len(logs) > 0 {
+					next = int64(logs[len(logs)-1].Id)
+				}
+				if err := checkExportPage(c, len(logs), int64(beforeID), next, more, int64(rowNo-2)); err != nil {
+					return err
+				}
+				for _, log := range logs {
+					row := formatCommonLogRow(log, exportOtherMap(log.Other), isAdmin && filter.ViewerRole >= common.RoleAdminUser)
+					if err := writer.WriteRow(row); err != nil {
+						return err
+					}
+					rowNo++
+				}
+				if len(logs) == 0 || !more {
+					break
+				}
+				beforeID = int(next)
 			}
-		}
-		if len(logs) == 0 || !more {
-			break
-		}
-		beforeID = int(next)
-	}
-	if err := writeXLSXStreamFile(c, "usage-logs.xlsx", "API usage logs", start, end, spool.rows, common.XLSXStreamSheet{
-		Name: "日志", Headers: spool.headers, Context: c.Request.Context(),
-		WriteRowsChecked: func(writer *common.XLSXRowWriter) error { return spool.write(c.Request.Context(), writer) },
+			return nil
+		},
 	}); err != nil {
 		common.ApiError(c, err)
 	}
@@ -281,44 +254,39 @@ func GetTaskLogsExport(c *gin.Context) {
 	if isAdmin {
 		role = c.GetInt("role")
 	}
-	headers := []string{"提交时间", "开始时间", "完成时间", "任务标识", "平台", "操作类型", "状态", "进度", "任务耗时", "原始模型", "实际模型", "失败原因", "产物"}
-	if role >= common.RoleAdminUser {
-		headers = append(headers, "用户", "渠道编号", "分组", "费用", "请求标识", "请求路径", "插件名称", "插件版本", "插件作者", "插件标识", "插件作者地址")
-	}
-	if role >= common.RoleRootUser {
-		headers = append(headers, "上游任务标识", "节点名称", "接口版本", "插件代次")
-	}
-	if err := writeXLSXStreamFile(c, "task-logs.xlsx", "Task logs", start, end, total, common.XLSXStreamSheet{Name: "任务日志", Headers: headers, Context: c.Request.Context(), WriteRowsChecked: func(writer *common.XLSXRowWriter) error {
-		beforeID, rowNo := int64(0), 2
-		for total > 0 {
-			rows, more, pageErr := model.ExportTaskLogsPage(c.Request.Context(), userID, start, end, taskID, channelID, beforeID, model.ExportPageSize)
-			if pageErr != nil {
-				return pageErr
-			}
-			next := int64(0)
-			if len(rows) > 0 {
-				next = int64(rows[len(rows)-1].ID)
-			}
-			if err := checkExportPage(c, len(rows), int64(beforeID), next, more, int64(rowNo-2)); err != nil {
-				return err
-			}
-			for _, row := range rows {
-				values, err := taskExportRow(row, role)
-				if err != nil {
+	headers, colWidths := taskLogExportHeaders(role >= common.RoleAdminUser)
+	if err := writeXLSXStreamFile(c, "task-logs.xlsx", "任务日志", start, end, total, common.XLSXStreamSheet{
+		Name: "任务日志", Headers: headers, ColWidths: colWidths, Context: c.Request.Context(),
+		WriteRowsChecked: func(writer *common.XLSXRowWriter) error {
+			beforeID := int64(0)
+			rowNo := 2
+			for total > 0 {
+				rows, more, pageErr := model.ExportTaskLogsPage(c.Request.Context(), userID, start, end, taskID, channelID, beforeID, model.ExportPageSize)
+				if pageErr != nil {
+					return pageErr
+				}
+				next := int64(0)
+				if len(rows) > 0 {
+					next = int64(rows[len(rows)-1].ID)
+				}
+				if err := checkExportPage(c, len(rows), int64(beforeID), next, more, int64(rowNo-2)); err != nil {
 					return err
 				}
-				if err := writer.SetRow(excelizeCell(rowNo), values); err != nil {
-					return err
+				for _, row := range rows {
+					values := formatTaskLogRow(row, role >= common.RoleAdminUser)
+					if err := writer.WriteRow(values); err != nil {
+						return err
+					}
+					rowNo++
 				}
-				rowNo++
+				if len(rows) == 0 || !more {
+					break
+				}
+				beforeID = rows[len(rows)-1].ID
 			}
-			if len(rows) == 0 || !more {
-				break
-			}
-			beforeID = rows[len(rows)-1].ID
-		}
-		return nil
-	}}); err != nil {
+			return nil
+		},
+	}); err != nil {
 		common.ApiError(c, err)
 	}
 }
@@ -349,35 +317,39 @@ func GetDrawingLogsExport(c *gin.Context) {
 	if isAdmin {
 		role = c.GetInt("role")
 	}
-	headers := drawingExportHeaders(role >= common.RoleAdminUser)
-	if err := writeXLSXStreamFile(c, "drawing-logs.xlsx", "Drawing logs", start, end, total, common.XLSXStreamSheet{Name: "绘图日志", Headers: headers, Context: c.Request.Context(), WriteRowsChecked: func(writer *common.XLSXRowWriter) error {
-		beforeID, rowNo := 0, 2
-		for total > 0 {
-			rows, more, pageErr := model.ExportDrawingLogsPage(c.Request.Context(), userID, start, end, mjID, channelID, beforeID, model.ExportPageSize)
-			if pageErr != nil {
-				return pageErr
-			}
-			next := int64(0)
-			if len(rows) > 0 {
-				next = int64(rows[len(rows)-1].ID)
-			}
-			if err := checkExportPage(c, len(rows), int64(beforeID), next, more, int64(rowNo-2)); err != nil {
-				return err
-			}
-			for _, row := range rows {
-				values := drawingExportValues(row, role >= common.RoleAdminUser)
-				if err := writer.SetRow(excelizeCell(rowNo), values); err != nil {
+	headers, colWidths := drawingLogExportHeaders(role >= common.RoleAdminUser)
+	if err := writeXLSXStreamFile(c, "drawing-logs.xlsx", "绘图日志", start, end, total, common.XLSXStreamSheet{
+		Name: "绘图日志", Headers: headers, ColWidths: colWidths, Context: c.Request.Context(),
+		WriteRowsChecked: func(writer *common.XLSXRowWriter) error {
+			beforeID := 0
+			rowNo := 2
+			for total > 0 {
+				rows, more, pageErr := model.ExportDrawingLogsPage(c.Request.Context(), userID, start, end, mjID, channelID, beforeID, model.ExportPageSize)
+				if pageErr != nil {
+					return pageErr
+				}
+				next := int64(0)
+				if len(rows) > 0 {
+					next = int64(rows[len(rows)-1].ID)
+				}
+				if err := checkExportPage(c, len(rows), int64(beforeID), next, more, int64(rowNo-2)); err != nil {
 					return err
 				}
-				rowNo++
+				for _, row := range rows {
+					values := formatDrawingLogRow(row, role >= common.RoleAdminUser)
+					if err := writer.WriteRow(values); err != nil {
+						return err
+					}
+					rowNo++
+				}
+				if len(rows) == 0 || !more {
+					break
+				}
+				beforeID = rows[len(rows)-1].ID
 			}
-			if len(rows) == 0 || !more {
-				break
-			}
-			beforeID = rows[len(rows)-1].ID
-		}
-		return nil
-	}}); err != nil {
+			return nil
+		},
+	}); err != nil {
 		common.ApiError(c, err)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"net/url"
 	"strconv"
+	"strings"
 )
 
 func resolveLogExportScope(c *gin.Context) (int, bool, bool, error) {
@@ -99,39 +100,24 @@ func exportLegacySuno(task *model.Task) string {
 	if json.Unmarshal(data, &clips) != nil {
 		return ""
 	}
-	var fields logExportFields
+	var parts []string
 	for i, clip := range clips {
 		audio, ok := clip["audio_url"].(string)
 		if !ok || audio == "" {
 			continue
 		}
-		prefix := fmt.Sprintf("音频%d", i+1)
 		title := exportString(clip["title"])
 		if title == "" {
 			title = "未命名"
 		}
-		fields.add(prefix+"标题", title)
-		metadata := exportMap(clip["metadata"])
-		tags := clip["tags"]
-		if !exportTruthy(tags) {
-			tags = metadata["tags"]
-		}
-		fields.text(prefix+"标签", tags)
+		desc := fmt.Sprintf("音频%d：%s (%s)", i+1, title, audio)
 		duration := exportN(clip, "duration")
-		if duration == 0 {
-			duration = exportN(metadata, "duration")
-		}
 		if duration > 0 {
-			fields.add(prefix+"时长", fmt.Sprintf("%d:%02d", int(duration)/60, int(duration)%60))
+			desc += fmt.Sprintf(" 时长 %d:%02d", int(duration)/60, int(duration)%60)
 		}
-		fields.add(prefix+"地址", audio)
-		image := clip["image_url"]
-		if !exportTruthy(image) {
-			image = clip["image_large_url"]
-		}
-		fields.text(prefix+"封面地址", image)
+		parts = append(parts, desc)
 	}
-	return exportFieldText(fields)
+	return strings.Join(parts, "\n")
 }
 
 func safeExportAuthorURL(raw string) string {

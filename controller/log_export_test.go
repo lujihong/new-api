@@ -43,13 +43,17 @@ func TestExportScopeFailClosed(t *testing.T) {
 }
 
 func TestCommonExportPrivateColumns(t *testing.T) {
-	headers := commonExportHeaders(false, false)
+	headers, widths := commonLogExportHeaders(false)
+	if len(headers) != len(widths) {
+		t.Fatalf("headers/widths length mismatch: %d != %d", len(headers), len(widths))
+	}
 	for _, h := range headers {
-		if h == "请求路径" || h == "节点名称" || h == "渠道编号" {
-			t.Fatalf("private column %s", h)
+		if h == "请求路径" || h == "节点名称" || h == "渠道" || h == "用户" || h == "IP地址" {
+			t.Fatalf("private column leaked to user: %s", h)
 		}
 	}
-	row := exportCommonRow(&model.Log{Other: `{"audit_info":{"path":"SECRET"},"request_path":"SECRET","root_info":{"node_name":"SECRET"}}`}, false, false)
+	log := &model.Log{Other: `{"audit_info":{"path":"SECRET"},"request_path":"SECRET","root_info":{"node_name":"SECRET"}}`}
+	row := formatCommonLogRow(log, exportOtherMap(log.Other), false)
 	if len(row) != len(headers) {
 		t.Fatalf("row/header width %d/%d", len(row), len(headers))
 	}
@@ -61,17 +65,20 @@ func TestCommonExportPrivateColumns(t *testing.T) {
 }
 
 func TestDrawingExportUIContract(t *testing.T) {
-	headers := drawingExportHeaders(true)
+	headers, widths := drawingLogExportHeaders(true)
+	if len(headers) != len(widths) {
+		t.Fatalf("headers/widths length mismatch: %d != %d", len(headers), len(widths))
+	}
 	for _, h := range headers {
 		if h == "费用" {
 			t.Fatal("drawing UI has no fee")
 		}
 	}
-	row := drawingExportValues(model.DrawingExportRow{Action: "IMAGINE", Status: "NOT_START", Code: 21}, true)
+	row := formatDrawingLogRow(model.DrawingExportRow{Action: "IMAGINE", Status: "NOT_START", Code: 21}, true)
 	if len(row) != len(headers) {
-		t.Fatal("width mismatch")
+		t.Fatalf("width mismatch: %d != %d", len(row), len(headers))
 	}
-	if row[1] != "绘图" || row[2] != "未启动" || row[len(row)-1] != "等待中" {
+	if row[1] != "文生图" || row[2] != "未启动" || row[len(row)-1] != "21" {
 		t.Fatalf("unlocalized row: %#v", row)
 	}
 }
