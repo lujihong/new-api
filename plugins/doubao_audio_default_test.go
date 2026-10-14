@@ -12,7 +12,7 @@ func TestDoubaoMobileAudioDefault(t *testing.T) {
 	require.NoError(t, err)
 	p, err := jsplugin.NewRegistry().RegisterFactory(source, jsplugin.Options{Key: "doubao"})
 	require.NoError(t, err)
-	for _, model := range []string{"moma-seedance-2.0", "nm-moma-seedance-2.0"} {
+	for _, model := range []string{"moma-1-seedance-2.0", "moma-2-seedance-2.0", "moma-3-seedance-2.0"} {
 		require.Contains(t, p.Meta.Models, model)
 		for _, tc := range []struct {
 			name, base string

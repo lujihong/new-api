@@ -866,6 +866,13 @@ func shouldRetryTaskRelay(c *gin.Context, channelId int, taskErr *taskdto.TaskEr
 	if taskErr == nil || taskErr.NoRetry {
 		return false
 	}
+	// 资金安全加固：视频生成异步任务严禁超时自动重试，防止上游重复扣费击穿额度
+	if c != nil {
+		modelName := strings.ToLower(c.GetString("original_model"))
+		if strings.Contains(modelName, "seedance") || strings.Contains(modelName, "moma") || strings.Contains(modelName, "video") {
+			return false
+		}
+	}
 	if service.ShouldSkipRetryAfterChannelAffinityFailure(c) {
 		return false
 	}

@@ -220,29 +220,18 @@ func ListAvailableAICCChannels() ([]map[string]any, error) {
 		if _, err := aiccConfigFromChannel(ch); err != nil {
 			continue
 		}
-		region := "官方移动专线"
-		base := ""
-		if ch.BaseURL != nil {
-			base = *ch.BaseURL
+			region := ""
+			var modelsList []string
+			if strings.TrimSpace(ch.Models) != "" {
+				modelsList = strings.Split(ch.Models, ",")
+			}
+			result = append(result, map[string]any{
+				"id":     ch.Id,
+				"name":   ch.Name,
+				"region": region,
+				"models": modelsList,
+			})
 		}
-		if strings.Contains(ch.Name, "呼和浩特") || strings.Contains(base, "huhehaote") {
-			region = "呼和浩特节点"
-		} else if strings.Contains(ch.Name, "内蒙") {
-			region = "内蒙节点"
-		} else if strings.Contains(ch.Name, "北京") {
-			region = "北京节点"
-		}
-		var modelsList []string
-		if strings.TrimSpace(ch.Models) != "" {
-			modelsList = strings.Split(ch.Models, ",")
-		}
-		result = append(result, map[string]any{
-			"id":     ch.Id,
-			"name":   ch.Name,
-			"region": region,
-			"models": modelsList,
-		})
-	}
 	return result, nil
 }
 

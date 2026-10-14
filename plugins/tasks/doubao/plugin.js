@@ -23,8 +23,11 @@ export const meta = {
     "doubao-seedance-2.0-fast",
     "doubao-seedance-2.0-mini",
     "doubao-seedance-2.5",
-    "moma-seedance-2.0",
-    "nm-moma-seedance-2.0",
+    "moma-1-seedance-2.0",
+    "moma-2-seedance-2.0",
+    "moma-3-seedance-2.0",
+    "doubao-3-seedance-2.0",
+    "doubao-3-seedance-2.5",
     "doubao-seedance-1.5-pro",
     "doubao-seedance-1.0-pro",
   ],
@@ -158,17 +161,17 @@ function videoInputRatio(model, resolution, content) {
   const video = hasVideo(content);
   const res = trimmed(resolution).toLowerCase();
   const m = trimmed(model).toLowerCase();
-  if (m === "doubao-seedance-2-5-260628" || m === "doubao-seedance-2.5") {
+  if (m.includes("seedance-2-5") || m.includes("seedance-2.5")) {
     if (res === "1080p") return video ? 7.0 / 10.7 : 11.7 / 10.7;
     return video ? 42 / 70 : 1;
   }
-  if (m === "doubao-seedance-2-0-260128" || m === "doubao-seedance-2.0" || m === "doubao-seedance-2-0") {
+  if (m.includes("seedance-2-0") || m.includes("seedance-2.0")) {
     if (res === "1080p") return video ? 31 / 46 : 51 / 46;
     if (res === "4k") return video ? 16 / 46 : 26 / 46;
     return video ? 28 / 46 : 1;
   }
-  if (m === "doubao-seedance-2-0-fast-260128" || m === "doubao-seedance-2.0-fast") return video ? 22 / 37 : 1;
-  if (m === "doubao-seedance-2-0-mini-260615" || m === "doubao-seedance-2.0-mini") return video ? 14 / 23 : 1;
+  if (m.includes("seedance-2-0-fast") || m.includes("seedance-2.0-fast")) return video ? 22 / 37 : 1;
+  if (m.includes("seedance-2-0-mini") || m.includes("seedance-2.0-mini")) return video ? 14 / 23 : 1;
   return 1;
 }
 
@@ -357,7 +360,7 @@ export function buildSubmitRequest(ctx) {
     else {
       const sourceModel = String(ctx.model || body.model || "");
       const isCmeCloudSeedance20 = /^https:\/\/([a-z0-9-]+\.)*cmecloud\.cn(?::443)?(?:\/|$)/i.test(String(ctx.baseUrl || "")) &&
-        (sourceModel === "moma-seedance-2.0" || sourceModel === "nm-moma-seedance-2.0");
+        (sourceModel.includes("moma") && sourceModel.includes("seedance"));
       if (isCmeCloudSeedance20) body.generate_audio = true;
     }
   }
@@ -378,8 +381,10 @@ export function buildSubmitRequest(ctx) {
   }
   body.model = targetModel;
   const baseUrl = doubaoBaseUrl(ctx.baseUrl);
+  const isStelloria = String(ctx.baseUrl || "").toLowerCase().includes("stelloria.link");
+  const submitUrl = isStelloria ? baseUrl + "/v1/videos/generations" : baseUrl + "/api/v3/contents/generations/tasks";
   return {
-    url: baseUrl + "/api/v3/contents/generations/tasks",
+    url: submitUrl,
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json", Authorization: "Bearer " + ctx.apiKey },
     body: body,
@@ -389,8 +394,9 @@ export function buildSubmitRequest(ctx) {
 }
 
 export function parseSubmitResponse(ctx, resp) {
-  if (!resp.body || !resp.body.id) throw new Error("task_id is empty");
-  return { taskId: resp.body.id, taskData: resp.body };
+  const taskId = (resp.body && (resp.body.id || resp.body.task_id)) || "";
+  if (!taskId) throw new Error("task_id is empty");
+  return { taskId: taskId, taskData: resp.body };
 }
 
 export function extractUsage(ctx) {
@@ -421,28 +427,35 @@ export function extractUsage(ctx) {
 
 export function buildQueryRequest(ctx) {
   const baseUrl = doubaoBaseUrl(ctx.baseUrl);
+  const isStelloria = String(ctx.baseUrl || "").toLowerCase().includes("stelloria.link") || String(ctx.taskId || "").startsWith("task-");
+  const queryUrl = isStelloria ? baseUrl + "/v1/tasks/" + ctx.taskId : baseUrl + "/api/v3/contents/generations/tasks/" + ctx.taskId;
   return {
-    url: baseUrl + "/api/v3/contents/generations/tasks/" + ctx.taskId,
+    url: queryUrl,
     method: "GET",
     headers: { Accept: "application/json", "Content-Type": "application/json", Authorization: "Bearer " + ctx.apiKey },
   };
 }
 
 export function parseTaskResult(ctx, body) {
-  if (body.status === "pending" || body.status === "queued") return { status: "QUEUED", progress: "10%" };
-  if (body.status === "processing" || body.status === "running") return { status: "IN_PROGRESS", progress: "50%" };
-  if (body.status === "succeeded") {
-    const result = { status: "SUCCESS", progress: "100%", url: body.content && body.content.video_url ? body.content.video_url : "" };
-    const usage = body.usage || {};
+  const actualBody = (body && body.result && typeof body.result === "object") ? body.result : body;
+  const status = String(actualBody.status || body.status || "").toLowerCase();
+  if (status === "pending" || status === "queued") return { status: "QUEUED", progress: "10%" };
+  if (status === "processing" || status === "running") return { status: "IN_PROGRESS", progress: "50%" };
+  if (status === "succeeded" || status === "completed") {
+    let videoUrl = (actualBody.content && actualBody.content.video_url) || body.result_url || "";
+    if (!videoUrl && typeof body.result === "string" && body.result.startsWith("http")) videoUrl = body.result;
+    const result = { status: "SUCCESS", progress: "100%", url: videoUrl };
+    const usage = actualBody.usage || body.usage || {};
     const completionTokens = Number(usage.completion_tokens || 0);
     const totalTokens = Number(usage.total_tokens || 0);
     if (Number.isFinite(completionTokens) && completionTokens > 0) result.completionTokens = completionTokens;
     if (Number.isFinite(totalTokens) && totalTokens > 0) result.totalTokens = totalTokens;
     return result;
   }
-  if (body.status === "failed" || body.status === "expired" || body.status === "cancelled") {
-    let reason = body.error && body.error.message ? body.error.message : body.status;
-    if (reason && typeof reason === "string" && (reason.includes("真人") || reason.includes("肖像") || reason.includes("实名认证") || reason.toLowerCase().includes("face") || reason.toLowerCase().includes("security"))) {
+  if (status === "failed" || status === "expired" || status === "cancelled") {
+    let reason = (actualBody.error && (actualBody.error.message || actualBody.error)) || body.error || status;
+    if (typeof reason !== "string") reason = JSON.stringify(reason);
+    if (reason && (reason.includes("真人") || reason.includes("肖像") || reason.includes("实名认证") || reason.toLowerCase().includes("face") || reason.toLowerCase().includes("security"))) {
       reason = "移动云真人合规拦截: " + reason + " (请先在 AICC 素材库完成真人 H5 实名认证，并在生视频时传 asset://{asset_id})";
     }
     return { status: "FAILURE", progress: "100%", reason: reason };
@@ -453,6 +466,7 @@ export function parseTaskResult(ctx, body) {
 function artifactData(ctx) {
   const data = (ctx && ctx.data) || {};
   if (data.data && typeof data.data === "object" && data.data.task_id && Object.prototype.hasOwnProperty.call(data.data, "data")) return data.data.data || {};
+  if (data.result && typeof data.result === "object") return data.result;
   return data;
 }
 
@@ -460,28 +474,32 @@ export function listArtifacts(task) {
   if (task.status !== "SUCCESS") return [];
   const content = artifactData(task).content || {};
   const artifacts = [];
-  if (trimmed(content.video_url)) artifacts.push({ key: "video", type: "video" });
+  const videoUrl = trimmed(content.video_url || task.result_url || (task.data && task.data.result_url));
+  if (videoUrl) artifacts.push({ key: "video", type: "video" });
   if (trimmed(content.last_frame_url)) artifacts.push({ key: "last_frame", type: "image", mimeType: "image/png" });
   return artifacts;
 }
 
 export function buildContentRequest(ctx) {
   const content = artifactData(ctx).content || {};
-  const urls = { video: content.video_url, last_frame: content.last_frame_url };
+  const urls = { video: content.video_url || ctx.data?.result_url, last_frame: content.last_frame_url };
   const url = trimmed(urls[ctx.artifactKey]);
   if (!url) throw new Error("artifact_not_found");
   return { url: url, method: ctx.clientRequest.method, credentialless: true };
 }
 
 export function extractUsageOnComplete(task, taskResult, body) {
-  if (!body || body.status !== "succeeded") return {};
+  if (!body) return {};
+  const actualBody = (body.result && typeof body.result === "object") ? body.result : body;
+  const status = String(actualBody.status || body.status || "").toLowerCase();
+  if (status !== "succeeded" && status !== "completed") return {};
   const facts = {};
-  const usage = body.usage || {};
+  const usage = actualBody.usage || body.usage || {};
   let tokens = Number(usage.completion_tokens);
   if (!Number.isFinite(tokens) || tokens <= 0) tokens = Number(usage.total_tokens);
   if (Number.isFinite(tokens) && tokens > 0) facts.tokens = tokens;
-  const content = body.content || {};
-  const resolution = trimmed(content.resolution || body.resolution).toLowerCase();
+  const content = actualBody.content || body.content || {};
+  const resolution = trimmed(content.resolution || actualBody.resolution || body.resolution).toLowerCase();
   if (["480p", "720p", "1080p", "4k"].includes(resolution)) facts.resolution = resolution;
   return facts;
 }
