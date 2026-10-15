@@ -309,7 +309,7 @@ export function buildSubmitRequest(ctx) {
     const norm = normalizeAssetUri(raw);
     if (norm && !seenUrls.has(norm)) {
       seenUrls.add(norm);
-      imageContent.push({ type: "image_url", image_url: { url: norm } });
+      imageContent.push({ type: "image_url", image_url: { url: norm }, role: "reference_image" });
     }
   }
 
@@ -341,7 +341,19 @@ export function buildSubmitRequest(ctx) {
   const hasReference = body.content.length > 0;
   const prompt = trimmed(req.prompt) || metadataContent.filter((item) => item && item.type === "text" && typeof item.text === "string").map((item) => item.text).join("\n");
   if (prompt || !hasReference) body.content.push({ type: "text", text: prompt });
-  if (Array.isArray(body.content)) body.content = rewriteDraftTaskContent(body.content, ctx.originTasks);
+  if (Array.isArray(body.content)) {
+    body.content = rewriteDraftTaskContent(body.content, ctx.originTasks);
+    for (const item of body.content) {
+      if (!item || typeof item !== "object") continue;
+      if (item.type === "image_url" && !item.role) {
+        item.role = "reference_image";
+      } else if (item.type === "video_url" && !item.role) {
+        item.role = "reference_video";
+      } else if (item.type === "audio_url" && !item.role) {
+        item.role = "reference_audio";
+      }
+    }
+  }
   const durationValue = req.seconds !== undefined && req.seconds !== "" ? req.seconds : (req.duration !== undefined ? req.duration : body.duration);
   if (durationValue !== undefined) {
     const seconds = Number(durationValue);
