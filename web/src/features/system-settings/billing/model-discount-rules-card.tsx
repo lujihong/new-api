@@ -256,22 +256,24 @@ function DiscountEditor(props: {
     onSettled: () => { operation.current = false },
   })
   const removeSaved = useMutation({
-    mutationFn: async ({ value, baseline }: { value: string; baseline: string; previousRules: ModelDiscountRules }) => {
+    mutationFn: async ({ value, baseline }: { value: string; baseline: string; previousRules: ModelDiscountRules; nextRules: ModelDiscountRules }) => {
       const response = await updateSystemOption({ key: 'ModelDiscountRules', value, expected_value: baseline })
       if (!response.success) throw new Error(response.message || t('Failed to update setting'))
       return value
     },
-    onSuccess: (value) => {
+    onSuccess: (value, variables) => {
       if (!isCurrentSession()) return
       setSaved(value)
+      if (variables.nextRules) {
+        setRules(variables.nextRules)
+      }
       queryClient.setQueryData(['model-discount-rules', userId, sid], JSON.parse(value))
       void queryClient.invalidateQueries({ queryKey: ['pricing'] })
       void queryClient.invalidateQueries({ queryKey: ['system-options'] })
       toast.success(t('Setting updated successfully'))
     },
-    onError: (failure: Error, variables) => {
+    onError: (failure: Error) => {
       if (!isCurrentSession()) return
-      setRules(variables.previousRules)
       setError(failure.message)
     },
     onSettled: () => { operation.current = false },
@@ -572,6 +574,12 @@ function DiscountEditor(props: {
                 aria-describedby='discount-percent-help'
                 value={percent}
                 onChange={(event) => setPercent(event.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    addRule()
+                  }
+                }}
                 aria-invalid={!validPercent}
               />
               <span className='text-stone-400 pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-xs font-semibold'>
@@ -817,12 +825,23 @@ function DiscountEditor(props: {
           <Button
             type='button'
             onClick={() => {
-              if (operation.current || busy || formDirty || freeRule || deleting || !isCurrentSession()) return
+              if (operation.current || busy || freeRule || deleting || !isCurrentSession()) return
+              let finalRules = rules
+              if (editing && factor !== null) {
+                const row = { ...editing, factor }
+                finalRules = replaceDiscountRule(rules, row)
+                setRules(finalRules)
+                clearForm()
+              } else if (formDirty && !editing) {
+                return
+              }
+              const finalSerialized = JSON.stringify(finalRules)
+              if (finalSerialized === saved) return
               operation.current = true
               setError('')
-              save.mutate({ value: serializedRules, baseline: saved })
+              save.mutate({ value: finalSerialized, baseline: saved })
             }}
-            disabled={!dirty || busy || formDirty || !!freeRule || !!deleting}
+            disabled={(!dirty && !editing) || busy || (!editing && formDirty) || !!freeRule || !!deleting}
             className='h-8 px-4 text-xs font-semibold'
           >
             {save.isPending ? t('Saving...') : t('Save all rules', { defaultValue: '保存全部规则' })}
@@ -830,7 +849,8 @@ function DiscountEditor(props: {
         </div>
       </div>
 
-      {formDirty && <p role='status' className='text-sm text-muted-foreground'>表单尚未加入规则清单，请先新增、更新或取消，再保存全部规则。</p>}
+      {formDirty && !editing && <p role='status' className='text-sm text-muted-foreground'>表单尚未加入规则清单，请先新增或清空输入，再保存全部规则。</p>}
+      {editing && <p role='status' className='text-sm text-amber-600 dark:text-amber-400'>正在编辑规则比例，可点击上方「更新草稿规则」或直接点击「保存全部规则」生效。</p>}
       <ConfirmDialog
         open={freeRule !== null}
         onOpenChange={(open) => { if (!open) setFreeRule(null) }}
@@ -859,15 +879,25 @@ function DiscountEditor(props: {
           const target = deleting
           const previousRules = rules
           const nextRules = removeDiscountRule(previousRules, target)
-          const savedRules = removeDiscountRule(JSON.parse(saved) as ModelDiscountRules, target)
-          operation.current = true
-          setRules(nextRules)
-          setTablePage(Math.min(visiblePage, Math.max(1, Math.ceil((filteredRows.length - 1) / 25))))
           setDeleting(null)
+
+          const parsedSaved = JSON.parse(saved) as ModelDiscountRules
+          const existsInSaved = Object.hasOwn(parsedSaved[target.kind]?.[target.owner] ?? {}, target.model)
+
+          if (!existsInSaved) {
+            setRules(nextRules)
+            setTablePage(Math.min(visiblePage, Math.max(1, Math.ceil((filteredRows.length - 1) / 25))))
+            return
+          }
+
+          const savedRules = removeDiscountRule(parsedSaved, target)
+          operation.current = true
+          setTablePage(Math.min(visiblePage, Math.max(1, Math.ceil((filteredRows.length - 1) / 25))))
           removeSaved.mutate({
             value: JSON.stringify(savedRules),
             baseline: saved,
             previousRules,
+            nextRules,
           })
         }}
       />

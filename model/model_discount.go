@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 )
 
@@ -44,7 +46,7 @@ func ExactDiscountModels() ([]string, error) {
 // Expected is the exact configuration read by the editor. Row locking protects
 // concurrent writers in different application processes as well as this one.
 func UpdateModelDiscountRulesConditional(value, expected string) error {
-	if err := ValidateModelDiscountReferences(value); err != nil {
+	if err := ValidateModelDiscountReferences(value, expected); err != nil {
 		return err
 	}
 	modelDiscountOptionMu.Lock()
@@ -80,7 +82,9 @@ func UpdateModelDiscountRulesConditional(value, expected string) error {
 
 // Reference checks run on writes only. Loading previously saved rules must not
 // fail because an administrator subsequently disabled a channel or user.
-func ValidateModelDiscountReferences(raw string) error {
+// Baselines allows deleting or retaining historical rules even if the underlying
+// channel models were renamed or disabled after the rule was initially created.
+func ValidateModelDiscountReferences(raw string, baselines ...string) error {
 	if err := ratio_setting.ValidateModelDiscountRulesJSON(raw); err != nil {
 		return err
 	}
@@ -88,12 +92,40 @@ func ValidateModelDiscountReferences(raw string) error {
 	if err := json.Unmarshal([]byte(raw), &rules); err != nil {
 		return err
 	}
+
+	baselineGroups := map[string]bool{}
+	baselineUsers := map[string]bool{}
+	baselineModels := map[string]bool{}
+	for _, base := range baselines {
+		if strings.TrimSpace(base) == "" {
+			continue
+		}
+		var oldRules ratio_setting.ModelDiscountRules
+		if json.Unmarshal([]byte(base), &oldRules) == nil {
+			for group, models := range oldRules.Groups {
+				baselineGroups[group] = true
+				for model := range models {
+					baselineModels[model] = true
+				}
+			}
+			for user, models := range oldRules.Users {
+				baselineUsers[user] = true
+				for model := range models {
+					baselineModels[model] = true
+				}
+			}
+		}
+	}
+
 	for group := range rules.Groups {
-		if !ratio_setting.ContainsGroupRatio(group) {
+		if !baselineGroups[group] && !ratio_setting.ContainsGroupRatio(group) {
 			return fmt.Errorf("客户组不存在：%s", group)
 		}
 	}
 	for id := range rules.Users {
+		if baselineUsers[id] {
+			continue
+		}
 		userID, _ := strconv.Atoi(id) // Canonical positive IDs have already been validated.
 		var count int64
 		if err := DB.Model(&User{}).Where("id = ?", userID).Count(&count).Error; err != nil {
@@ -103,32 +135,44 @@ func ValidateModelDiscountReferences(raw string) error {
 			return fmt.Errorf("用户不存在或已删除：%s", id)
 		}
 	}
-	requested := map[string]bool{}
+	newModels := map[string]bool{}
 	for _, models := range rules.Groups {
 		for name := range models {
-			requested[name] = true
+			if !baselineModels[name] {
+				newModels[name] = true
+			}
 		}
 	}
 	for _, models := range rules.Users {
 		for name := range models {
-			requested[name] = true
+			if !baselineModels[name] {
+				newModels[name] = true
+			}
 		}
 	}
-	if len(requested) == 0 {
+	if len(newModels) == 0 {
 		return nil
 	}
 	// Public metadata supports aliases/patterns; channel declarations are the
 	// exact callable IDs and do not require reading any channel credentials.
 	var channels []Channel
-	if err := DB.Select("models").Find(&channels).Error; err != nil {
+	if err := DB.Select("models", "model_mapping").Find(&channels).Error; err != nil {
 		return err
 	}
 	for _, channel := range channels {
 		for _, name := range channel.GetModels() {
-			delete(requested, name)
+			delete(newModels, name)
 		}
+			if channel.ModelMapping != nil && *channel.ModelMapping != "" {
+				var mapping map[string]string
+				if common.UnmarshalJsonStr(*channel.ModelMapping, &mapping) == nil {
+					for src := range mapping {
+						delete(newModels, src)
+					}
+				}
+			}
 	}
-	for name := range requested {
+	for name := range newModels {
 		return fmt.Errorf("模型未在渠道中配置，请选择精确模型 ID：%s", name)
 	}
 	return nil

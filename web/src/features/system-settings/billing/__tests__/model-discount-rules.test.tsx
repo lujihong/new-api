@@ -187,6 +187,27 @@ describe('model discount editor', () => {
     await waitFor(() => expect(put).toHaveBeenCalledWith('/api/option/', expect.objectContaining({ value: JSON.stringify({ groups: { vip: { 'exact-model': 0, 'other-model': 0.9 } } }) })))
   })
 
+  it('allows saving all rules directly while editing without requiring explicit draft update', async () => {
+    const baseline = { groups: { vip: { 'exact-model': 0.8 } } }
+    const put = setup(JSON.stringify(baseline))
+    await screen.findByText('80% · 8折')
+    await userEvent.click(screen.getByRole('button', { name: '编辑' }))
+    await userEvent.clear(screen.getByLabelText('实付比例（0–100%）'))
+    await userEvent.type(screen.getByLabelText('实付比例（0–100%）'), '75')
+    const saveBtn = screen.getByRole('button', { name: '保存全部规则' })
+    expect(saveBtn).toBeEnabled()
+    await userEvent.click(saveBtn)
+    await waitFor(() =>
+      expect(put).toHaveBeenCalledWith(
+        '/api/option/',
+        expect.objectContaining({
+          value: JSON.stringify({ groups: { vip: { 'exact-model': 0.75 } } }),
+          expected_value: JSON.stringify(baseline),
+        })
+      )
+    )
+  })
+
   it('bounds rule DOM to a page and leaves filtering usable with no matches', async () => {
     const models = Object.fromEntries(Array.from({ length: 10000 }, (_, i) => [`model-${String(i).padStart(5, '0')}`, 0.8]))
     setup(JSON.stringify({ groups: { vip: models } }))
