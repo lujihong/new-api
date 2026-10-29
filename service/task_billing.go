@@ -291,34 +291,78 @@ func RecalculateTaskQuota(ctx context.Context, task *model.Task, actualQuota int
 		reason,
 	))
 
-	var logType int
-	var logQuota int
-	if quotaDelta > 0 {
-		logType = model.LogTypeConsume
-		logQuota = quotaDelta
-	} else {
-		logType = model.LogTypeRefund
-		logQuota = -quotaDelta
-	}
-	other := taskBillingOther(task)
-	other.SetPublic("task_id", task.TaskID)
-	other.SetPublic("pre_consumed_quota", preConsumedQuota)
-	other.SetPublic("actual_quota", actualQuota)
-	for _, clamp := range clamps {
-		attachQuotaSaturationToOther(other, clamp)
-	}
-	model.RecordTaskBillingLog(model.RecordTaskBillingLogParams{
-		UserId:    settlement.UserID,
-		LogType:   logType,
-		Content:   reason,
-		ChannelId: settlement.ChannelID,
-		ModelName: taskModelName(task),
-		Quota:     logQuota,
-		TokenId:   settlement.TokenID,
-		Group:     task.Group,
-		Other:     other,
-		NodeName:  task.PrivateData.NodeName,
-	})
+		var logType int
+		var logQuota int
+		if quotaDelta > 0 {
+			logType = model.LogTypeConsume
+			logQuota = quotaDelta
+		} else {
+			logType = model.LogTypeRefund
+			logQuota = -quotaDelta
+		}
+		actualTokens := 0
+		if task.PrivateData.BillingContext != nil && task.PrivateData.BillingContext.TieredSnapshot != nil {
+			if tVal, ok := task.PrivateData.BillingContext.TieredSnapshot.UsageFacts["tokens"]; ok {
+				switch v := tVal.(type) {
+				case int:
+					actualTokens = v
+				case int64:
+					actualTokens = int(v)
+				case float64:
+					actualTokens = int(v)
+				}
+			}
+		}
+		if actualTokens == 0 && len(task.Data) > 0 {
+			var payload struct {
+				Usage struct {
+					CompletionTokens int `json:"completion_tokens"`
+					TotalTokens      int `json:"total_tokens"`
+				} `json:"usage"`
+				Result struct {
+					Usage struct {
+						CompletionTokens int `json:"completion_tokens"`
+						TotalTokens      int `json:"total_tokens"`
+					} `json:"usage"`
+				} `json:"result"`
+			}
+			if common.Unmarshal(task.Data, &payload) == nil {
+				if payload.Result.Usage.CompletionTokens > 0 {
+					actualTokens = payload.Result.Usage.CompletionTokens
+				} else if payload.Result.Usage.TotalTokens > 0 {
+					actualTokens = payload.Result.Usage.TotalTokens
+				} else if payload.Usage.CompletionTokens > 0 {
+					actualTokens = payload.Usage.CompletionTokens
+				} else if payload.Usage.TotalTokens > 0 {
+					actualTokens = payload.Usage.TotalTokens
+				}
+			}
+		}
+
+		other := taskBillingOther(task)
+		other.SetPublic("task_id", task.TaskID)
+		other.SetPublic("pre_consumed_quota", preConsumedQuota)
+		other.SetPublic("actual_quota", actualQuota)
+		if actualTokens > 0 {
+			other.SetPublic("actual_tokens", actualTokens)
+		}
+		for _, clamp := range clamps {
+			attachQuotaSaturationToOther(other, clamp)
+		}
+		model.RecordTaskBillingLog(model.RecordTaskBillingLogParams{
+			UserId:           settlement.UserID,
+			LogType:          logType,
+			Content:          reason,
+			ChannelId:        settlement.ChannelID,
+			ModelName:        taskModelName(task),
+			Quota:            logQuota,
+			PromptTokens:     0,
+			CompletionTokens: actualTokens,
+			TokenId:          settlement.TokenID,
+			Group:            task.Group,
+			Other:            other,
+			NodeName:         task.PrivateData.NodeName,
+		})
 }
 
 // RecalculateTaskQuotaByTokens 根据实际 token 消耗重新计费（异步差额结算）。

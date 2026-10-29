@@ -88,6 +88,25 @@ export function TaskDetailsDialog(props: TaskDetailsDialogProps) {
   const runtime = access.runtime
   const properties = props.log.properties
 
+  const rawData =
+    typeof props.log.data === 'object' && props.log.data !== null
+      ? (props.log.data as Record<string, any>)
+      : undefined
+  const resultObj =
+    rawData?.result && typeof rawData.result === 'object'
+      ? rawData.result
+      : undefined
+  const usageObj = resultObj?.usage || rawData?.usage
+  const completionTokens =
+    typeof usageObj?.completion_tokens === 'number'
+      ? usageObj.completion_tokens
+      : undefined
+  const totalTokens =
+    typeof usageObj?.total_tokens === 'number' ? usageObj.total_tokens : undefined
+  const resResolution = resultObj?.resolution || rawData?.resolution
+  const resDuration = resultObj?.duration || rawData?.duration
+  const resRatio = resultObj?.ratio || rawData?.ratio
+
   return (
     <Dialog
       open={props.open}
@@ -159,6 +178,39 @@ export function TaskDetailsDialog(props: TaskDetailsDialogProps) {
             <DetailRow label={t('Fail Reason')} value={props.log.fail_reason} />
           ) : null}
         </DetailSection>
+
+        {(completionTokens != null || totalTokens != null || resResolution || resDuration || resRatio) ? (
+          <DetailSection label={t('Usage & Output', { defaultValue: '用量与生成参数' })}>
+            {resResolution ? (
+              <DetailRow label={t('Resolution', { defaultValue: '分辨率' })} value={String(resResolution)} mono />
+            ) : null}
+            {resRatio ? (
+              <DetailRow label={t('Aspect Ratio', { defaultValue: '画面比例' })} value={String(resRatio)} mono />
+            ) : null}
+            {resDuration != null ? (
+              <DetailRow label={t('Video Duration', { defaultValue: '视频时长' })} value={`${resDuration}s`} mono />
+            ) : null}
+            {completionTokens != null ? (
+              <DetailRow
+                label={t('Completion Tokens', { defaultValue: '生成 Tokens' })}
+                value={completionTokens.toLocaleString()}
+                mono
+              />
+            ) : null}
+            {totalTokens != null && totalTokens !== completionTokens ? (
+              <DetailRow
+                label={t('Total Tokens', { defaultValue: '总计 Tokens' })}
+                value={totalTokens.toLocaleString()}
+                mono
+              />
+            ) : null}
+            <DetailRow
+              label={t('Actual Quota', { defaultValue: '最终扣除额度' })}
+              value={formatLogQuota(props.log.quota)}
+              mono
+            />
+          </DetailSection>
+        ) : null}
 
         {props.isAdmin ? (
           <DetailSection

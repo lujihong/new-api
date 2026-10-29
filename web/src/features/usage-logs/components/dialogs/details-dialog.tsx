@@ -373,7 +373,16 @@ function TokenBreakdown(props: { log: UsageLog; other: LogOtherData }) {
   const { log, other } = props
 
   const promptTokens = log.prompt_tokens || 0
-  const completionTokens = log.completion_tokens || 0
+  let completionTokens = log.completion_tokens || 0
+  const actualTokens =
+    other.actual_tokens ??
+    (typeof other.usage_facts?.tokens === 'number'
+      ? other.usage_facts.tokens
+      : undefined)
+
+  if (completionTokens === 0 && actualTokens != null && actualTokens > 0) {
+    completionTokens = actualTokens
+  }
   const cacheRead = other.cache_tokens || 0
   const cacheWrite = other.cache_creation_tokens || 0
   const cacheWrite5m = other.cache_creation_tokens_5m || 0
@@ -384,9 +393,11 @@ function TokenBreakdown(props: { log: UsageLog; other: LogOtherData }) {
 
   const rows: Array<{ label: string; value: string }> = []
 
-  rows.push({ label: t('Input Tokens'), value: promptTokens.toLocaleString() })
+  if (promptTokens > 0) {
+    rows.push({ label: t('Input Tokens'), value: promptTokens.toLocaleString() })
+  }
   rows.push({
-    label: t('Output Tokens'),
+    label: log.type === 6 ? t('Final Settled Tokens', { defaultValue: '实际结算用量' }) : t('Output Tokens'),
     value: completionTokens.toLocaleString(),
   })
 

@@ -425,10 +425,10 @@ export function extractUsage(ctx) {
   }
   if (seconds <= 0) seconds = 5;
   seconds = Math.min(seconds, 3600);
-  const rawResolution = req.resolution || req.resolution_name || metadata.resolution || metadata.resolution_name || req.size;
+  const rawResolution = req.resolution || req.resolution_name || metadata.resolution || metadata.resolution_name || req.size || req.ratio || req.aspect_ratio || metadata.ratio || metadata.aspect_ratio;
   const raw = trimmed(rawResolution).toLowerCase();
   const recognized = ["480p", "720p", "1080p", "4k"].includes(raw) || raw.replace("*", "x").split("x").length === 2;
-  const resolution = recognized ? normalizeResolution(rawResolution) : (raw === "16:9" || raw === "9:16" || raw === "1:1" ? "720p" : "1080p");
+  const resolution = recognized ? normalizeResolution(rawResolution) : "720p";
   const hasRefVideo = hasReferenceVideo(req, metadata);
   return {
     tokens: estimateTokens(seconds, resolution),

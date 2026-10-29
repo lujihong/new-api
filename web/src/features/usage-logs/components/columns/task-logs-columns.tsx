@@ -245,6 +245,35 @@ export function useTaskLogsColumns(
     },
     createProgressColumn<TaskLog>({ headerLabel: t('Progress') }),
     {
+      id: 'tokens',
+      header: 'Tokens',
+      cell: ({ row }) => {
+        const log = row.original
+        const rawData =
+          typeof log.data === 'object' && log.data !== null
+            ? (log.data as Record<string, any>)
+            : undefined
+        const resultObj =
+          rawData?.result && typeof rawData.result === 'object'
+            ? rawData.result
+            : undefined
+        const usageObj = resultObj?.usage || rawData?.usage
+        const completionTokens =
+          typeof usageObj?.completion_tokens === 'number'
+            ? usageObj.completion_tokens
+            : undefined
+        if (completionTokens != null && completionTokens > 0) {
+          return (
+            <span className='font-mono text-xs font-semibold tabular-nums text-stone-800 dark:text-stone-200'>
+              {completionTokens.toLocaleString()}
+            </span>
+          )
+        }
+        return <span className='text-muted-foreground/60 text-xs'>-</span>
+      },
+      size: 100,
+    },
+    {
       id: 'artifacts',
       header: t('Artifacts'),
       cell: ({ row }) => (

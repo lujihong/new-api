@@ -710,11 +710,55 @@ export function useCommonLogsColumns(
         const other = parseLogOther(log.other)
 
         const promptTokens = log.prompt_tokens || 0
-        const completionTokens = log.completion_tokens || 0
+        let completionTokens = log.completion_tokens || 0
+        const isRefund = log.type === 6 // 异步任务退款 / 差额退款
+        const actualTokens =
+          other?.actual_tokens ??
+          (typeof other?.usage_facts?.tokens === 'number'
+            ? other.usage_facts.tokens
+            : undefined)
+
+        if (completionTokens === 0 && actualTokens != null && actualTokens > 0) {
+          completionTokens = actualTokens
+        }
+
+        // 针对退款/差额结算记录展示实际结算用量
+        if (isRefund && completionTokens > 0) {
+          return (
+            <TooltipProvider delay={300}>
+              <Tooltip>
+                <TooltipTrigger render={<div className='flex flex-col gap-0.5' />}>
+                  <span className='font-mono text-xs font-semibold text-emerald-600 dark:text-emerald-400 tabular-nums'>
+                    {completionTokens.toLocaleString()}
+                  </span>
+                  <span className='text-[10px] text-muted-foreground/70'>
+                    {t('Final Tokens', { defaultValue: '实际用量' })}
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side='top' className='space-y-1 text-xs'>
+                  <p>实际结算用量：{completionTokens.toLocaleString()} tokens</p>
+                  {other?.pre_consumed_quota != null && (
+                    <p className='text-muted-foreground'>
+                      预扣额度：{formatLogQuota(other.pre_consumed_quota)}
+                    </p>
+                  )}
+                  {other?.actual_quota != null && (
+                    <p className='text-muted-foreground'>
+                      实际应扣：{formatLogQuota(other.actual_quota)}
+                    </p>
+                  )}
+                  <p className='text-emerald-500 font-semibold'>
+                    差额退款：{formatLogQuota(log.quota)}
+                  </p>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          )
+        }
+
         if (promptTokens === 0 && completionTokens === 0) {
           const isPerCall =
             isPerCallBilling(other?.model_price) ||
-            Boolean(other?.is_task) ||
             (typeof log.content === 'string' && log.content.includes('按次计费'))
           if (isPerCall) {
             return (
@@ -725,6 +769,30 @@ export function useCommonLogsColumns(
                 copyable={false}
                 className='!text-[11px]'
               />
+            )
+          }
+          if (
+            Boolean(other?.is_task) &&
+            typeof other?.usage_facts?.tokens === 'number' &&
+            other.usage_facts.tokens > 0
+          ) {
+            return (
+              <TooltipProvider delay={300}>
+                <Tooltip>
+                  <TooltipTrigger render={<div className='flex flex-col gap-0.5' />}>
+                    <span className='font-mono text-xs font-medium tabular-nums'>
+                      {Number(other.usage_facts.tokens).toLocaleString()}
+                    </span>
+                    <span className='text-[10px] text-muted-foreground/70'>
+                      {t('Estimated Tokens', { defaultValue: '预估用量' })}
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent side='top' className='space-y-1 text-xs'>
+                    <p>提交预扣用量：{Number(other.usage_facts.tokens).toLocaleString()} tokens</p>
+                    <p className='text-muted-foreground'>预冻结额度：{formatLogQuota(log.quota)}</p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
             )
           }
           return <span className='text-muted-foreground text-xs'>-</span>
