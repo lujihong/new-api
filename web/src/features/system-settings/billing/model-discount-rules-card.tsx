@@ -19,6 +19,7 @@ import {
 } from 'lucide-react'
 
 import { ConfirmDialog } from '@/components/confirm-dialog'
+import { Dialog } from '@/components/dialog'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -178,10 +179,18 @@ function DiscountEditor(props: {
   const [editing, setEditing] = useState<DiscountRow | null>(null)
   const [freeRule, setFreeRule] = useState<{ row: DiscountRow; replace: boolean } | null>(null)
   const [tablePage, setTablePage] = useState(1)
+  const [dialogOpen, setDialogOpen] = useState(false)
 
   const serializedRules = useMemo(() => JSON.stringify(rules), [rules])
   const dirty = serializedRules !== saved
-  const formDirty = editing !== null || kind !== 'groups' || owner !== '' || model !== '' || percent !== '100' || keyword !== ''
+  const formDirty =
+    dialogOpen &&
+    (editing !== null ||
+      kind !== 'groups' ||
+      owner !== '' ||
+      model !== '' ||
+      percent !== '100' ||
+      keyword !== '')
   function clearForm() {
     setEditing(null)
     setKind('groups')
@@ -192,6 +201,13 @@ function DiscountEditor(props: {
     setSearch('')
     setPage(1)
     setFreeRule(null)
+  }
+
+  function openAddDialog() {
+    if (busy || operation.current || freeRule || deleting) return
+    setError('')
+    clearForm()
+    setDialogOpen(true)
   }
 
   const groups = useQuery({
@@ -324,6 +340,7 @@ function DiscountEditor(props: {
     try {
       setRules(replace ? replaceDiscountRule(rules, row) : addDiscountRule(rules, row))
       clearForm()
+      setDialogOpen(false)
     } catch {
       setError('该客户与模型已有规则或原行已不存在，请检查规则清单。')
     }
@@ -343,7 +360,7 @@ function DiscountEditor(props: {
   }
 
   function editRule(row: DiscountRow) {
-    if (busy || operation.current || formDirty || freeRule) return
+    if (busy || operation.current || freeRule || deleting) return
     setError('')
     setEditing(row)
     setKind(row.kind)
@@ -351,6 +368,7 @@ function DiscountEditor(props: {
     setModel(row.model)
     // Preserve historical precision. Invalid legacy precision must be explicitly changed or cancelled.
     setPercent(String(Number((row.factor * 100).toPrecision(15))))
+    setDialogOpen(true)
   }
 
   const allRows = useMemo(() => discountRows(rules), [rules])
@@ -384,145 +402,164 @@ function DiscountEditor(props: {
     <div className='space-y-6'>
       <FormNavigationGuard when={dirty || formDirty} />
 
-      {/* 规则配置操作面板 */}
-      <fieldset
-        disabled={busy}
-        className='rounded-xl border border-stone-200/80 bg-stone-50/50 p-4.5 dark:border-stone-800 dark:bg-stone-900/40 space-y-4'
-      >
-        <div className='flex items-center justify-between border-b border-stone-200/70 pb-3 dark:border-stone-800'>
-          <div className='flex items-center gap-2 text-xs font-bold text-stone-800 dark:text-stone-200'>
-            <Plus className='size-4 text-emerald-600 dark:text-emerald-400' />
-            <span>{editing ? '编辑规则比例（客户与模型已锁定）' : '新增专属折扣配置'}</span>
-          </div>
+      {/* 统一添加 / 编辑专属折扣弹窗 */}
+      <Dialog
+        open={dialogOpen}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDialogOpen(false)
+            clearForm()
+          } else {
+            setDialogOpen(true)
+          }
+        }}
+        title={
           <div className='flex items-center gap-2'>
-            <span className='text-[11px] text-stone-400'>
-              当前草稿 {allRows.length} 条 · 保存后生效
-            </span>
+            <div className='size-7 rounded-lg bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 flex items-center justify-center ring-1 ring-emerald-500/20'>
+              <Percent className='size-3.5' />
+            </div>
+            <span>{editing ? '编辑规则比例' : '新增专属折扣配置'}</span>
           </div>
-        </div>
-
-        <div className='grid gap-4 md:grid-cols-3'>
-          {/* 规则类型 */}
-          <div className='min-w-0 space-y-1.5'>
-            <Label className='text-xs font-medium text-stone-700 dark:text-stone-300'>
-              {t('Rule type', { defaultValue: '规则类型' })}
-            </Label>
-            <Combobox
-              openOnFocus={false}
-              aria-label={t('Rule type', { defaultValue: '规则类型' })}
-              value={kind}
-              disabled={busy || editing !== null}
-              options={[
-                { value: 'groups', label: t('Customer group', { defaultValue: '客户组' }) },
-                { value: 'users', label: t('User') },
-              ]}
-              onValueChange={(value) => {
-                setKind(value === 'users' ? 'users' : 'groups')
-                setOwner('')
-              }}
-            />
-          </div>
-
-          {/* 目标客户 / 客户组 */}
-          <div className='min-w-0 space-y-1.5'>
-            <div className='flex items-center justify-between'>
+        }
+        description={
+          editing
+            ? '修改该客户主体与指定模型的折扣比例（客户与模型已锁定）。'
+            : '为特定客户组或指定用户账号配置单模型的专属折扣比例。'
+        }
+        contentClassName='sm:max-w-xl'
+      >
+        <form
+          onSubmit={(e) => {
+            e.preventDefault()
+            addRule()
+          }}
+          className='space-y-4 pt-1'
+        >
+          {/* 规则类型与客户选择 */}
+          <div className='grid gap-3.5 sm:grid-cols-2'>
+            {/* 规则类型 */}
+            <div className='min-w-0 space-y-1.5'>
               <Label className='text-xs font-medium text-stone-700 dark:text-stone-300'>
-                {t('Discount owner', { defaultValue: '折扣客户' })}
+                {t('Rule type', { defaultValue: '规则类型' })}
               </Label>
-              {kind === 'users' && users.data && (
-                <span className='text-[10px] text-stone-400'>
-                  下拉仅当前页（每页 20 人）：第 {page} / {Math.max(1, Math.ceil(users.data.total / 20))} 页 · 共 {users.data.total} 人
-                </span>
-              )}
+              <Combobox
+                openOnFocus={false}
+                aria-label={t('Rule type', { defaultValue: '规则类型' })}
+                value={kind}
+                disabled={busy || editing !== null}
+                options={[
+                  { value: 'groups', label: t('Customer group', { defaultValue: '客户组' }) },
+                  { value: 'users', label: t('User') },
+                ]}
+                onValueChange={(value) => {
+                  setKind(value === 'users' ? 'users' : 'groups')
+                  setOwner('')
+                }}
+              />
             </div>
 
-            {kind === 'users' ? (
-              <div className='space-y-2'>
-                <div className='flex gap-1.5'>
-                  <Input
-                    className='h-8 text-xs'
-                    placeholder={t('Search users', { defaultValue: '搜索用户...' })}
-                    aria-label={t('Search users', { defaultValue: '搜索用户' })}
-                    value={keyword}
-                    disabled={editing !== null}
-                    onChange={(event) => setKeyword(event.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && !e.nativeEvent.isComposing && e.keyCode !== 229) {
+            {/* 目标客户 / 客户组 */}
+            <div className='min-w-0 space-y-1.5'>
+              <div className='flex items-center justify-between'>
+                <Label className='text-xs font-medium text-stone-700 dark:text-stone-300'>
+                  {t('Discount owner', { defaultValue: '折扣客户' })}
+                </Label>
+                {kind === 'users' && users.data && (
+                  <span className='text-[10px] text-stone-400'>
+                    第 {page}/{Math.max(1, Math.ceil(users.data.total / 20))} 页 · 共 {users.data.total} 人
+                  </span>
+                )}
+              </div>
+
+              {kind === 'users' ? (
+                <div className='space-y-2'>
+                  <div className='flex gap-1.5'>
+                    <Input
+                      className='h-8 text-xs'
+                      placeholder={t('Search users', { defaultValue: '搜索用户...' })}
+                      aria-label={t('Search users', { defaultValue: '搜索用户' })}
+                      value={keyword}
+                      disabled={editing !== null}
+                      onChange={(event) => setKeyword(event.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.nativeEvent.isComposing && e.keyCode !== 229) {
+                          e.preventDefault()
+                          setSearch(keyword)
+                          setPage(1)
+                          setOwner('')
+                        }
+                      }}
+                    />
+                    <Button
+                      type='button'
+                      variant='outline'
+                      size='sm'
+                      className='h-8 shrink-0 px-2.5 text-xs'
+                      disabled={editing !== null}
+                      onClick={() => {
                         setSearch(keyword)
                         setPage(1)
                         setOwner('')
-                      }
-                    }}
+                      }}
+                    >
+                      <Search className='size-3 mr-1 text-stone-400' />
+                      {t('Search')}
+                    </Button>
+                  </div>
+                  <Combobox
+                    openOnFocus={false}
+                    aria-label={t('Discount owner', { defaultValue: '折扣客户' })}
+                    placeholder={t('Select', { defaultValue: '请选择用户' })}
+                    options={ownerOptions}
+                    value={owner}
+                    onValueChange={(value) => setOwner(value ?? '')}
+                    disabled={busy || editing !== null || catalogLoading || catalogFailed}
                   />
-                  <Button
-                    type='button'
-                    variant='outline'
-                    size='sm'
-                    className='h-8 shrink-0 px-2.5 text-xs'
-                    disabled={editing !== null}
-                    onClick={() => {
-                      setSearch(keyword)
-                      setPage(1)
-                      setOwner('')
-                    }}
-                  >
-                    <Search className='size-3 mr-1 text-stone-400' />
-                    {t('Search')}
-                  </Button>
+                  {users.data && users.data.total > 20 && (
+                    <div className='flex items-center justify-end gap-1.5 pt-0.5 text-xs'>
+                      <Button
+                        type='button'
+                        variant='ghost'
+                        size='sm'
+                        className='h-6 px-2 text-[11px]'
+                        disabled={busy || editing !== null || page <= 1}
+                        onClick={() => {
+                          setPage(page - 1)
+                          setOwner('')
+                        }}
+                      >
+                        <ChevronLeft className='size-3 mr-0.5' />
+                        {t('Previous')}
+                      </Button>
+                      <Button
+                        type='button'
+                        variant='ghost'
+                        size='sm'
+                        className='h-6 px-2 text-[11px]'
+                        disabled={busy || editing !== null || page * 20 >= users.data.total}
+                        onClick={() => {
+                          setPage(page + 1)
+                          setOwner('')
+                        }}
+                      >
+                        {t('Next')}
+                        <ChevronRight className='size-3 ml-0.5' />
+                      </Button>
+                    </div>
+                  )}
                 </div>
+              ) : (
                 <Combobox
                   openOnFocus={false}
                   aria-label={t('Discount owner', { defaultValue: '折扣客户' })}
-                  placeholder={t('Select', { defaultValue: '请选择用户' })}
+                  placeholder={t('Select', { defaultValue: '请选择客户组' })}
                   options={ownerOptions}
                   value={owner}
                   onValueChange={(value) => setOwner(value ?? '')}
                   disabled={busy || editing !== null || catalogLoading || catalogFailed}
                 />
-                {users.data && users.data.total > 20 && (
-                  <div className='flex items-center justify-end gap-1.5 pt-0.5 text-xs'>
-                    <Button
-                      type='button'
-                      variant='ghost'
-                      size='sm'
-                      className='h-6 px-2 text-[11px]'
-                      disabled={busy || editing !== null || page <= 1}
-                      onClick={() => {
-                        setPage(page - 1)
-                        setOwner('')
-                      }}
-                    >
-                      <ChevronLeft className='size-3 mr-0.5' />
-                      {t('Previous')}
-                    </Button>
-                    <Button
-                      type='button'
-                      variant='ghost'
-                      size='sm'
-                      className='h-6 px-2 text-[11px]'
-                      disabled={busy || editing !== null || page * 20 >= users.data.total}
-                      onClick={() => {
-                        setPage(page + 1)
-                        setOwner('')
-                      }}
-                    >
-                      {t('Next')}
-                      <ChevronRight className='size-3 ml-0.5' />
-                    </Button>
-                  </div>
-                )}
-              </div>
-            ) : (
-              <Combobox
-                openOnFocus={false}
-                aria-label={t('Discount owner', { defaultValue: '折扣客户' })}
-                placeholder={t('Select', { defaultValue: '请选择客户组' })}
-                options={ownerOptions}
-                value={owner}
-                onValueChange={(value) => setOwner(value ?? '')}
-                disabled={busy || editing !== null || catalogLoading || catalogFailed}
-              />
-            )}
+              )}
+            </div>
           </div>
 
           {/* 精确模型选择 */}
@@ -540,140 +577,167 @@ function DiscountEditor(props: {
               disabled={busy || editing !== null || catalogLoading || catalogFailed}
             />
           </div>
-        </div>
 
-        {/* 折扣比率与快捷预设 */}
-        <div className='rounded-lg border border-stone-200/60 bg-white/70 p-3.5 dark:border-stone-800 dark:bg-stone-900/60 space-y-2.5'>
-          <div className='flex flex-wrap items-center justify-between gap-2'>
-            <div className='flex items-center gap-2'>
-              <Label
-                htmlFor='model-discount-percent'
-                className='text-xs font-medium text-stone-700 dark:text-stone-300'
-              >
-                {t('Pay percentage', { defaultValue: '实付比例（0–100%）' })}
-              </Label>
-              <span className='text-[11px] text-stone-400'>输入客户实际支付的百分比，例如 80 即 8 折</span>
-            </div>
-            {validPercent && (
-              <Badge
-                variant={discountBadgeVariant}
-                className='font-mono text-xs font-bold'
-              >
-                {discountText(factor)} · ×{factor}
-              </Badge>
-            )}
-          </div>
-
-          <div className='flex flex-wrap items-center gap-3'>
-            <div className='relative w-32'>
-              <Input
-                id='model-discount-percent'
-                className='h-9 font-mono pr-7 text-sm font-bold'
-                type='text'
-                inputMode='decimal'
-                aria-describedby='discount-percent-help'
-                value={percent}
-                onChange={(event) => setPercent(event.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault()
-                    addRule()
-                  }
-                }}
-                aria-invalid={!validPercent}
-              />
-              <span className='text-stone-400 pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-xs font-semibold'>
-                %
-              </span>
-            </div>
-
-            {/* 快捷折扣芯片 */}
-            <div className='flex flex-wrap items-center gap-1.5'>
-              {PRESET_DISCOUNTS.map((preset) => (
-                <button
-                  key={preset.value}
-                  type='button'
-                  onClick={() => setPercent(preset.value)}
-                  className={cn(
-                    'cursor-pointer rounded-md border px-2 py-1 text-xs font-medium transition-colors',
-                    percent === preset.value
-                      ? 'border-emerald-500/50 bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-500/30'
-                      : 'border-stone-200 bg-white text-stone-600 hover:bg-stone-100 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-300 dark:hover:bg-stone-700'
-                  )}
+          {/* 折扣比率与快捷预设 */}
+          <div className='rounded-lg border border-stone-200/70 bg-stone-50/50 p-3.5 dark:border-stone-800 dark:bg-stone-900/50 space-y-2.5'>
+            <div className='flex flex-wrap items-center justify-between gap-2'>
+              <div className='flex items-center gap-2'>
+                <Label
+                  htmlFor='model-discount-percent'
+                  className='text-xs font-medium text-stone-700 dark:text-stone-300'
                 >
-                  {preset.label}
-                </button>
-              ))}
+                  {t('Pay percentage', { defaultValue: '实付比例（0–100%）' })}
+                </Label>
+                <span className='text-[11px] text-stone-400'>例如 80 即 8 折</span>
+              </div>
+              {validPercent && (
+                <Badge
+                  variant={discountBadgeVariant}
+                  className='font-mono text-xs font-bold'
+                >
+                  {discountText(factor)} · ×{factor}
+                </Badge>
+              )}
             </div>
 
-            <div className='ml-auto'>
-              <Button
-                type='button'
-                onClick={addRule}
-                disabled={busy || !!freeRule || !owner || !model || !validPercent || (!editing && (catalogLoading || catalogFailed))}
-                className='h-9 gap-1.5 text-xs font-semibold'
-              >
-                <Plus className='size-3.5' />
-                {editing ? '更新草稿规则' : t('Add rule', { defaultValue: '新增规则' })}
-              </Button>
-              {formDirty && <Button type='button' variant='ghost' disabled={busy} onClick={clearForm}>{editing ? '取消编辑' : '清空输入'}</Button>}
+            <div className='flex flex-wrap items-center gap-3'>
+              <div className='relative w-32'>
+                <Input
+                  id='model-discount-percent'
+                  className='h-9 font-mono pr-7 text-sm font-bold bg-white dark:bg-stone-900'
+                  type='text'
+                  inputMode='decimal'
+                  aria-describedby='discount-percent-help'
+                  value={percent}
+                  onChange={(event) => setPercent(event.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault()
+                      addRule()
+                    }
+                  }}
+                  aria-invalid={!validPercent}
+                />
+                <span className='text-stone-400 pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-xs font-semibold'>
+                  %
+                </span>
+              </div>
+
+              {/* 快捷折扣芯片 */}
+              <div className='flex flex-wrap items-center gap-1.5'>
+                {PRESET_DISCOUNTS.map((preset) => (
+                  <button
+                    key={preset.value}
+                    type='button'
+                    onClick={() => setPercent(preset.value)}
+                    className={cn(
+                      'cursor-pointer rounded-md border px-2 py-1 text-xs font-medium transition-colors',
+                      percent === preset.value
+                        ? 'border-emerald-500/50 bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-500/30'
+                        : 'border-stone-200 bg-white text-stone-600 hover:bg-stone-100 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-300 dark:hover:bg-stone-700'
+                    )}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
             </div>
+            <p id='discount-percent-help' role={validPercent ? undefined : 'alert'} className={cn('text-xs', validPercent ? 'text-muted-foreground' : 'text-destructive')}>
+              {validPercent ? '支持 0–100，最多六位小数。0 表示免费，100 表示沿用现有组价。' : '请输入 0–100 的普通十进制数，最多六位小数，不接受科学计数法。'}
+            </p>
           </div>
-          <p id='discount-percent-help' role={validPercent ? undefined : 'alert'} className={cn('text-sm', validPercent ? 'text-muted-foreground' : 'text-destructive')}>
-            {validPercent ? '支持 0–100，最多六位小数。0 表示免费，100 表示沿用现有组价。' : '请输入 0–100 的普通十进制数，最多六位小数，不接受科学计数法。'}
-          </p>
-        </div>
 
-        {catalogLoading && (
-          <p role='status' className='text-xs text-stone-500'>
-            {t('Loading...')}
-          </p>
-        )}
-        {catalogFailed && (
-          <Alert variant='destructive' className='py-2 text-xs'>
-            <AlertCircle className='size-4' />
-            <AlertDescription className='flex items-center justify-between'>
-              <span>
-                {t('Discount catalog failed', {
-                  defaultValue: '客户或模型目录加载失败，无法新增；请重试。',
-                })}
-              </span>
-              <Button
-                type='button'
-                variant='outline'
-                size='sm'
-                className='h-6 text-xs'
-                onClick={() => {
-                  void groups.refetch()
-                  void models.refetch()
-                  if (kind === 'users') void users.refetch()
-                }}
-              >
-                {t('Retry')}
-              </Button>
-            </AlertDescription>
-          </Alert>
-        )}
-      </fieldset>
+          {catalogLoading && (
+            <p role='status' className='text-xs text-stone-500'>
+              {t('Loading...')}
+            </p>
+          )}
+          {catalogFailed && (
+            <Alert variant='destructive' className='py-2 text-xs'>
+              <AlertCircle className='size-4' />
+              <AlertDescription className='flex items-center justify-between'>
+                <span>
+                  {t('Discount catalog failed', {
+                    defaultValue: '客户或模型目录加载失败，无法新增；请重试。',
+                  })}
+                </span>
+                <Button
+                  type='button'
+                  variant='outline'
+                  size='sm'
+                  className='h-6 text-xs'
+                  onClick={() => {
+                    void groups.refetch()
+                    void models.refetch()
+                    if (kind === 'users') void users.refetch()
+                  }}
+                >
+                  {t('Retry')}
+                </Button>
+              </AlertDescription>
+            </Alert>
+          )}
+
+          {/* 弹窗 Footer 动作栏 */}
+          <div className='flex items-center justify-end gap-2 border-t border-stone-200/80 pt-3.5 dark:border-stone-800'>
+            <Button
+              type='button'
+              variant='outline'
+              size='sm'
+              disabled={busy}
+              onClick={() => {
+                setDialogOpen(false)
+                clearForm()
+              }}
+            >
+              {t('Cancel')}
+            </Button>
+            <Button
+              type='submit'
+              size='sm'
+              disabled={busy || !!freeRule || !owner || !model || !validPercent || (!editing && (catalogLoading || catalogFailed))}
+              className='gap-1.5 font-semibold'
+            >
+              <Check className='size-3.5' />
+              <span>{editing ? '更新草稿规则' : t('Add rule', { defaultValue: '新增规则' })}</span>
+            </Button>
+          </div>
+        </form>
+      </Dialog>
 
       {/* 规则清单展示 */}
       <div className='space-y-3'>
-        <div className='flex flex-wrap items-center justify-between gap-2 px-0.5'>
+        <div className='flex flex-wrap items-center justify-between gap-3 px-0.5'>
           <div className='flex items-center gap-2'>
             <Tag className='size-4 text-stone-500' />
             <span className='text-sm font-bold text-stone-900 dark:text-stone-100'>
               已配置规则清单
             </span>
+            <Badge variant='outline' className='text-[10px] text-stone-500 font-mono'>
+              {allRows.length} 条
+            </Badge>
           </div>
 
-          <div className='w-full sm:w-56'>
-            <Input
-              aria-label='筛选规则或模型'
-              placeholder='筛选规则或模型...'
-              value={tableFilter}
-              onChange={(e) => { setTableFilter(e.target.value); setTablePage(1) }}
-              className='h-8 text-xs'
-            />
+          <div className='flex items-center gap-2.5 w-full sm:w-auto'>
+            <div className='w-full sm:w-56'>
+              <Input
+                aria-label='筛选规则或模型'
+                placeholder='筛选规则或模型...'
+                value={tableFilter}
+                onChange={(e) => { setTableFilter(e.target.value); setTablePage(1) }}
+                className='h-8 text-xs'
+              />
+            </div>
+            <Button
+              type='button'
+              size='sm'
+              className='h-8 gap-1.5 text-xs font-semibold'
+              disabled={busy || props.fetching}
+              onClick={openAddDialog}
+            >
+              <Plus className='size-3.5' />
+              <span>{t('Add rule button', { defaultValue: '添加规则' })}</span>
+            </Button>
           </div>
         </div>
 
@@ -687,9 +751,19 @@ function DiscountEditor(props: {
                 defaultValue: '暂无折扣规则，沿用现有组价，不额外优惠（×1）。',
               })}
             </p>
-            <p className='mt-0.5 text-xs text-stone-400'>
-              如需为特定用户或大客户群定制单模型价格，请在上方选择并添加
+            <p className='mt-0.5 text-xs text-stone-400 mb-3'>
+              如需为特定用户或大客户群定制单模型价格，可点击下方添加规则
             </p>
+            <Button
+              type='button'
+              size='sm'
+              onClick={openAddDialog}
+              disabled={busy || props.fetching}
+              className='h-8 gap-1.5 text-xs font-semibold'
+            >
+              <Plus className='size-3.5' />
+              <span>{t('Add first rule', { defaultValue: '配置首条规则' })}</span>
+            </Button>
           </div>
         ) : (
           <div className='overflow-hidden rounded-xl border border-stone-200/80 bg-white dark:border-stone-800 dark:bg-stone-900 shadow-2xs'>
